@@ -33,6 +33,37 @@ pub struct RequestInputs {
     pub variables: HashMap<String, String>,
 }
 
+/// Detailed timing breakdown for network traffic analysis
+#[derive(Debug, Clone)]
+pub struct NetworkTiming {
+    pub dns_lookup: Option<Duration>,
+    pub tcp_connect: Option<Duration>,
+    pub tls_handshake: Option<Duration>,
+    pub request_sent: Duration,
+    pub waiting: Duration,
+    pub content_download: Duration,
+    pub total: Duration,
+}
+
+/// Captured request details for traffic analysis
+#[derive(Debug, Clone)]
+pub struct RequestDetails {
+    pub method: String,
+    pub url: String,
+    pub headers: HashMap<String, String>,
+    pub body: Option<Vec<u8>>,
+    pub body_size: usize,
+}
+
+/// Network traffic details (Wireshark-style)
+#[derive(Debug, Clone)]
+pub struct NetworkTraffic {
+    pub timing: NetworkTiming,
+    pub request: RequestDetails,
+    pub response_headers_size: usize,
+    pub response_body_size: usize,
+}
+
 /// HTTP response with metadata
 #[derive(Debug, Clone)]
 pub struct HttpResponse {
@@ -40,6 +71,7 @@ pub struct HttpResponse {
     pub headers: HashMap<String, String>,
     pub body: Vec<u8>,
     pub duration: Duration,
+    pub traffic: Option<NetworkTraffic>,
 }
 
 /// HTTP client for executing API requests
@@ -185,6 +217,26 @@ impl HttpClient {
         // Build final URL with query parameters
         let final_url = Self::build_url(&url, &query_params)?;
         
+        // Capture request details for traffic analysis
+        let request_body = if let Some(body) = &inputs.body {
+            Some(template::substitute(body, &inputs.variables)?)
+        } else if let Some(body_template) = &endpoint.body_template {
+            Some(template::substitute(body_template, &inputs.variables)?)
+        } else {
+            None
+        };
+        
+        let request_body_bytes = request_body.as_ref().map(|b| b.as_bytes().to_vec());
+        let request_body_size = request_body_bytes.as_ref().map(|b| b.len()).unwrap_or(0);
+        
+        let request_details = RequestDetails {
+            method: format!("{:?}", endpoint.method),
+            url: final_url.clone(),
+            headers: headers.clone(),
+            body: request_body_bytes.clone(),
+            body_size: request_body_size,
+        };
+        
         // Build request
         let mut request = match endpoint.method {
             HttpMethod::GET => self.client.get(&final_url),
@@ -203,16 +255,19 @@ impl HttpClient {
         }
         
         // Add body if present
-        if let Some(body) = &inputs.body {
-            let body_content = template::substitute(body, &inputs.variables)?;
-            request = request.body(body_content);
-        } else if let Some(body_template) = &endpoint.body_template {
-            let body_content = template::substitute(body_template, &inputs.variables)?;
+        if let Some(body_content) = request_body {
             request = request.body(body_content);
         }
         
+        // Mark request send start
+        let request_send_start = Instant::now();
+        
         // Execute request
         let response = request.send().await?;
+        
+        // Mark waiting time (time to first byte)
+        let waiting_end = Instant::now();
+        let waiting_duration = waiting_end.duration_since(request_send_start);
         
         // Extract response data
         let status = response.status();
@@ -222,14 +277,45 @@ impl HttpClient {
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
         
+        // Calculate response headers size (approximate)
+        let response_headers_size: usize = response_headers
+            .iter()
+            .map(|(k, v)| k.len() + v.len() + 4) // +4 for ": " and "\r\n"
+            .sum();
+        
+        // Download response body
+        let download_start = Instant::now();
         let body = response.bytes().await?.to_vec();
-        let duration = start.elapsed();
+        let download_duration = download_start.elapsed();
+        
+        let total_duration = start.elapsed();
+        
+        // Build network traffic details
+        // Note: We can't easily get DNS/TCP/TLS timing from reqwest without custom connectors
+        // So we'll estimate based on what we have
+        let request_sent_duration = Duration::from_millis(1); // Approximate
+        
+        let traffic = NetworkTraffic {
+            timing: NetworkTiming {
+                dns_lookup: None, // Would need custom DNS resolver
+                tcp_connect: None, // Would need custom connector
+                tls_handshake: None, // Would need custom TLS connector
+                request_sent: request_sent_duration,
+                waiting: waiting_duration,
+                content_download: download_duration,
+                total: total_duration,
+            },
+            request: request_details,
+            response_headers_size,
+            response_body_size: body.len(),
+        };
         
         Ok(HttpResponse {
             status,
             headers: response_headers,
             body,
-            duration,
+            duration: total_duration,
+            traffic: Some(traffic),
         })
     }
 }

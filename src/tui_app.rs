@@ -65,6 +65,7 @@ pub struct AppState {
     pub selected_endpoint_index: usize,
     pub selected_index: usize, // For backward compatibility
     pub panel_focus: PanelFocus,
+    pub show_network_traffic: bool, // Toggle for network traffic display
     pub storage: StorageManager,
     pub http_client: HttpClient,
     pub last_response: Option<HttpResponse>,
@@ -91,6 +92,7 @@ impl AppState {
             selected_endpoint_index: 0,
             selected_index: 0,
             panel_focus: PanelFocus::Collections,
+            show_network_traffic: false, // Disabled by default
             storage,
             http_client,
             last_response: None,
@@ -102,6 +104,10 @@ impl AppState {
             collection_form: None,
             endpoint_form: None,
         })
+    }
+    
+    pub fn toggle_network_traffic(&mut self) {
+        self.show_network_traffic = !self.show_network_traffic;
     }
     
     pub fn navigate_up(&mut self) {

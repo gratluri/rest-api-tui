@@ -449,6 +449,10 @@ fn run_app_loop<B: Backend>(
                                         }
                                     }
                                 }
+                                't' => {
+                                    // Toggle network traffic display
+                                    app.toggle_network_traffic();
+                                }
                                 _ => {}
                             }
                         }
@@ -615,7 +619,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &AppState) {
             Span::styled(status, Style::default().fg(Color::Green)),
         ])
     } else {
-        Line::from("Ctrl+h/l: switch panels | Ctrl+j/k: navigate | '?': help | 'q': quit")
+        Line::from("Ctrl+h/l: panels | Ctrl+j/k: navigate | t: traffic | ?: help | q: quit")
     };
     
     let footer = Paragraph::new(text)
@@ -1186,26 +1190,57 @@ fn draw_definition_panel(f: &mut Frame, area: Rect, app: &AppState) {
 
 fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
     if let Some(response) = &app.last_response {
-        // Show response
+        // Show response with optional network traffic
+        let traffic_toggle = if app.show_network_traffic { "hide" } else { "show" };
         let header_text = format!(
-            "Response: {} - {:?} - {} bytes",
+            "Response: {} - {:?} - {} bytes  [t: {} traffic]",
             response.status,
             response.duration,
-            response.body.len()
+            response.body.len(),
+            traffic_toggle
         );
         
-        let formatted_body = app.last_response_formatted.as_ref()
-            .map(|s| s.as_str())
-            .unwrap_or("(unable to format response)");
-        
-        let paragraph = Paragraph::new(formatted_body)
-            .block(Block::default()
-                .title(header_text)
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Green)))
-            .wrap(Wrap { trim: false });
+        if app.show_network_traffic && response.traffic.is_some() {
+            // Split panel: response body (top) and network traffic (bottom)
+            let sections = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Percentage(50),  // Response body
+                    Constraint::Percentage(50),  // Network traffic
+                ])
+                .split(area);
+            
+            // Draw response body
+            let formatted_body = app.last_response_formatted.as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("(unable to format response)");
+            
+            let body_paragraph = Paragraph::new(formatted_body)
+                .block(Block::default()
+                    .title(header_text)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Green)))
+                .wrap(Wrap { trim: false });
 
-        f.render_widget(paragraph, area);
+            f.render_widget(body_paragraph, sections[0]);
+            
+            // Draw network traffic
+            draw_network_traffic(f, sections[1], response);
+        } else {
+            // Show only response body
+            let formatted_body = app.last_response_formatted.as_ref()
+                .map(|s| s.as_str())
+                .unwrap_or("(unable to format response)");
+            
+            let paragraph = Paragraph::new(formatted_body)
+                .block(Block::default()
+                    .title(header_text)
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Green)))
+                .wrap(Wrap { trim: false });
+
+            f.render_widget(paragraph, area);
+        }
     } else {
         // No response yet
         let text = vec![
@@ -1218,6 +1253,10 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             Line::from(vec![
                 Span::styled("Execute a request to see the response here", Style::default().fg(Color::DarkGray)),
             ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Press 't' to toggle network traffic view", Style::default().fg(Color::DarkGray)),
+            ]),
         ];
         
         let paragraph = Paragraph::new(text)
@@ -1226,6 +1265,99 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::DarkGray)))
             .alignment(ratatui::layout::Alignment::Center);
+
+        f.render_widget(paragraph, area);
+    }
+}
+
+fn draw_network_traffic(f: &mut Frame, area: Rect, response: &crate::http::HttpResponse) {
+    if let Some(traffic) = &response.traffic {
+        let mut lines = vec![
+            Line::from(vec![
+                Span::styled("▼ Network Traffic ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled("(Wireshark-style)", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Timing Breakdown:", Style::default().fg(Color::Yellow)),
+            ]),
+        ];
+        
+        // Timing information
+        if let Some(dns) = traffic.timing.dns_lookup {
+            lines.push(Line::from(format!("  DNS Lookup:        {:?}", dns)));
+        }
+        if let Some(tcp) = traffic.timing.tcp_connect {
+            lines.push(Line::from(format!("  TCP Connect:       {:?}", tcp)));
+        }
+        if let Some(tls) = traffic.timing.tls_handshake {
+            lines.push(Line::from(format!("  TLS Handshake:     {:?}", tls)));
+        }
+        lines.push(Line::from(format!("  Request Sent:      {:?}", traffic.timing.request_sent)));
+        lines.push(Line::from(format!("  Waiting (TTFB):    {:?}", traffic.timing.waiting)));
+        lines.push(Line::from(format!("  Content Download:  {:?}", traffic.timing.content_download)));
+        lines.push(Line::from(vec![
+            Span::styled("  Total:             ", Style::default()),
+            Span::styled(format!("{:?}", traffic.timing.total), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]));
+        
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Request:", Style::default().fg(Color::Yellow)),
+        ]));
+        lines.push(Line::from(format!("  {} {}", traffic.request.method, traffic.request.url)));
+        lines.push(Line::from(format!("  Headers: {} ({} bytes)", 
+            traffic.request.headers.len(),
+            traffic.request.headers.iter().map(|(k, v)| k.len() + v.len() + 4).sum::<usize>()
+        )));
+        
+        // Show first few headers
+        let mut header_count = 0;
+        for (key, value) in &traffic.request.headers {
+            if header_count < 3 {
+                let display_value = if value.len() > 50 {
+                    format!("{}...", &value[..50])
+                } else {
+                    value.clone()
+                };
+                lines.push(Line::from(format!("    {}: {}", key, display_value)));
+                header_count += 1;
+            }
+        }
+        if traffic.request.headers.len() > 3 {
+            lines.push(Line::from(format!("    ... and {} more", traffic.request.headers.len() - 3)));
+        }
+        
+        lines.push(Line::from(format!("  Body: {} bytes", traffic.request.body_size)));
+        
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Response:", Style::default().fg(Color::Yellow)),
+        ]));
+        lines.push(Line::from(format!("  Status: {}", response.status)));
+        lines.push(Line::from(format!("  Headers: {} ({} bytes)", 
+            response.headers.len(),
+            traffic.response_headers_size
+        )));
+        lines.push(Line::from(format!("  Body: {} bytes", traffic.response_body_size)));
+        
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("Total Transfer: ", Style::default().fg(Color::Gray)),
+            Span::styled(
+                format!("{} bytes", 
+                    traffic.request.body_size + traffic.response_headers_size + traffic.response_body_size
+                ),
+                Style::default().fg(Color::Cyan)
+            ),
+        ]));
+        
+        let paragraph = Paragraph::new(lines)
+            .block(Block::default()
+                .title("Network Traffic")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan)))
+            .wrap(Wrap { trim: true });
 
         f.render_widget(paragraph, area);
     }
