@@ -637,7 +637,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &AppState) {
             Span::styled(status, Style::default().fg(Color::Green)),
         ])
     } else {
-        Line::from("Ctrl+h/l: panels | Ctrl+j/k: navigate | t: traffic | ?: help | q: quit")
+        Line::from("Ctrl+h/l: panels | Ctrl+j/k: nav | PgUp/PgDn: scroll | t: traffic | ?: help")
     };
     
     let footer = Paragraph::new(text)
