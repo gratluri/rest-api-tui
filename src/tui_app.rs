@@ -66,6 +66,7 @@ pub struct AppState {
     pub selected_index: usize, // For backward compatibility
     pub panel_focus: PanelFocus,
     pub show_network_traffic: bool, // Toggle for network traffic display
+    pub response_scroll_offset: usize, // Vertical scroll offset for response panel
     pub storage: StorageManager,
     pub http_client: HttpClient,
     pub last_response: Option<HttpResponse>,
@@ -93,6 +94,7 @@ impl AppState {
             selected_index: 0,
             panel_focus: PanelFocus::Collections,
             show_network_traffic: false, // Disabled by default
+            response_scroll_offset: 0,
             storage,
             http_client,
             last_response: None,
@@ -108,6 +110,18 @@ impl AppState {
     
     pub fn toggle_network_traffic(&mut self) {
         self.show_network_traffic = !self.show_network_traffic;
+    }
+    
+    pub fn scroll_response_up(&mut self, lines: usize) {
+        self.response_scroll_offset = self.response_scroll_offset.saturating_sub(lines);
+    }
+    
+    pub fn scroll_response_down(&mut self, lines: usize) {
+        self.response_scroll_offset = self.response_scroll_offset.saturating_add(lines);
+    }
+    
+    pub fn reset_response_scroll(&mut self) {
+        self.response_scroll_offset = 0;
     }
     
     pub fn navigate_up(&mut self) {
@@ -228,6 +242,7 @@ impl AppState {
                         
                         self.last_response = Some(response);
                         self.last_response_formatted = Some(formatted);
+                        self.response_scroll_offset = 0; // Reset scroll on new response
                         // Stay on the same screen in new layout
                         self.status_message = Some("Request completed successfully".to_string());
                         self.error_message = None;

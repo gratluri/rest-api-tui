@@ -521,6 +521,24 @@ fn run_app_loop<B: Backend>(
                             }
                         }
                     }
+                    KeyCode::PageUp => {
+                        // Scroll response up (10 lines)
+                        if !in_edit_screen {
+                            app.scroll_response_up(10);
+                        }
+                    }
+                    KeyCode::PageDown => {
+                        // Scroll response down (10 lines)
+                        if !in_edit_screen {
+                            app.scroll_response_down(10);
+                        }
+                    }
+                    KeyCode::Home => {
+                        // Scroll to top of response
+                        if !in_edit_screen {
+                            app.reset_response_scroll();
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1193,7 +1211,7 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
         // Show response with optional network traffic
         let traffic_toggle = if app.show_network_traffic { "hide" } else { "show" };
         let header_text = format!(
-            "Response: {} - {:?} - {} bytes  [t: {} traffic]",
+            "Response: {} - {:?} - {} bytes  [t: {} traffic | PgUp/PgDn: scroll]",
             response.status,
             response.duration,
             response.body.len(),
@@ -1210,14 +1228,40 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
                 ])
                 .split(area);
             
-            // Draw response body
+            // Draw response body with scrolling
             let formatted_body = app.last_response_formatted.as_ref()
                 .map(|s| s.as_str())
                 .unwrap_or("(unable to format response)");
             
-            let body_paragraph = Paragraph::new(formatted_body)
+            // Split formatted body into lines
+            let lines: Vec<&str> = formatted_body.lines().collect();
+            let total_lines = lines.len();
+            
+            // Calculate visible area height (subtract borders)
+            let visible_height = sections[0].height.saturating_sub(2) as usize;
+            
+            // Clamp scroll offset
+            let max_scroll = total_lines.saturating_sub(visible_height);
+            let scroll_offset = app.response_scroll_offset.min(max_scroll);
+            
+            // Get visible lines
+            let visible_lines: Vec<Line> = lines
+                .iter()
+                .skip(scroll_offset)
+                .take(visible_height)
+                .map(|line| Line::from(*line))
+                .collect();
+            
+            // Add scroll indicator if needed
+            let title_with_scroll = if total_lines > visible_height {
+                format!("{} [{}/{}]", header_text, scroll_offset + 1, total_lines)
+            } else {
+                header_text.clone()
+            };
+            
+            let body_paragraph = Paragraph::new(visible_lines)
                 .block(Block::default()
-                    .title(header_text)
+                    .title(title_with_scroll)
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Green)))
                 .wrap(Wrap { trim: false });
@@ -1227,14 +1271,40 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             // Draw network traffic
             draw_network_traffic(f, sections[1], response);
         } else {
-            // Show only response body
+            // Show only response body with scrolling
             let formatted_body = app.last_response_formatted.as_ref()
                 .map(|s| s.as_str())
                 .unwrap_or("(unable to format response)");
             
-            let paragraph = Paragraph::new(formatted_body)
+            // Split formatted body into lines
+            let lines: Vec<&str> = formatted_body.lines().collect();
+            let total_lines = lines.len();
+            
+            // Calculate visible area height (subtract borders)
+            let visible_height = area.height.saturating_sub(2) as usize;
+            
+            // Clamp scroll offset
+            let max_scroll = total_lines.saturating_sub(visible_height);
+            let scroll_offset = app.response_scroll_offset.min(max_scroll);
+            
+            // Get visible lines
+            let visible_lines: Vec<Line> = lines
+                .iter()
+                .skip(scroll_offset)
+                .take(visible_height)
+                .map(|line| Line::from(*line))
+                .collect();
+            
+            // Add scroll indicator if needed
+            let title_with_scroll = if total_lines > visible_height {
+                format!("{} [{}/{}]", header_text, scroll_offset + 1, total_lines)
+            } else {
+                header_text
+            };
+            
+            let paragraph = Paragraph::new(visible_lines)
                 .block(Block::default()
-                    .title(header_text)
+                    .title(title_with_scroll)
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Green)))
                 .wrap(Wrap { trim: false });
