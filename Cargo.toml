@@ -1,0 +1,30 @@
+[package]
+name = "rest_api_tui"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rest_api_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "rest_api_tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.28"
+crossterm = "0.28"
+tokio = { version = "1.40", features = ["full"] }
+reqwest = { version = "0.12", features = ["json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.10", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1.0"
+dirs = "5.0"
+urlencoding = "2.1"
+base64 = "0.22"
+
+[dev-dependencies]
+proptest = "1.5"
+tempfile = "3.24"
