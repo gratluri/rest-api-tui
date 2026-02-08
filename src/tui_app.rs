@@ -51,11 +51,20 @@ pub struct EndpointForm {
     pub header_edit_field: usize, // 0=key, 1=value
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PanelFocus {
+    Collections,
+    Endpoints,
+}
+
 pub struct AppState {
     pub collections: Vec<ApiCollection>,
     pub current_screen: Screen,
     pub previous_screen: Option<Screen>,
-    pub selected_index: usize,
+    pub selected_collection_index: usize,
+    pub selected_endpoint_index: usize,
+    pub selected_index: usize, // For backward compatibility
+    pub panel_focus: PanelFocus,
     pub storage: StorageManager,
     pub http_client: HttpClient,
     pub last_response: Option<HttpResponse>,
@@ -78,7 +87,10 @@ impl AppState {
             collections,
             current_screen: Screen::CollectionList,
             previous_screen: None,
+            selected_collection_index: 0,
+            selected_endpoint_index: 0,
             selected_index: 0,
+            panel_focus: PanelFocus::Collections,
             storage,
             http_client,
             last_response: None,
@@ -93,15 +105,50 @@ impl AppState {
     }
     
     pub fn navigate_up(&mut self) {
+        match self.panel_focus {
+            PanelFocus::Collections => {
+                if self.selected_collection_index > 0 {
+                    self.selected_collection_index -= 1;
+                    self.selected_endpoint_index = 0; // Reset endpoint selection
+                }
+            }
+            PanelFocus::Endpoints => {
+                if self.selected_endpoint_index > 0 {
+                    self.selected_endpoint_index -= 1;
+                }
+            }
+        }
+        // Backward compatibility
         if self.selected_index > 0 {
             self.selected_index -= 1;
         }
     }
     
     pub fn navigate_down(&mut self, max: usize) {
+        match self.panel_focus {
+            PanelFocus::Collections => {
+                if self.selected_collection_index < max.saturating_sub(1) {
+                    self.selected_collection_index += 1;
+                    self.selected_endpoint_index = 0; // Reset endpoint selection
+                }
+            }
+            PanelFocus::Endpoints => {
+                if self.selected_endpoint_index < max.saturating_sub(1) {
+                    self.selected_endpoint_index += 1;
+                }
+            }
+        }
+        // Backward compatibility
         if self.selected_index < max.saturating_sub(1) {
             self.selected_index += 1;
         }
+    }
+    
+    pub fn toggle_panel_focus(&mut self) {
+        self.panel_focus = match self.panel_focus {
+            PanelFocus::Collections => PanelFocus::Endpoints,
+            PanelFocus::Endpoints => PanelFocus::Collections,
+        };
     }
     
     pub fn navigate_back(&mut self) {
@@ -133,9 +180,21 @@ impl AppState {
     pub fn select(&mut self) {
         match &self.current_screen {
             Screen::CollectionList => {
-                if self.selected_index < self.collections.len() {
-                    self.current_screen = Screen::EndpointList(self.selected_index);
-                    self.selected_index = 0;
+                // In new layout, selecting a collection shows its endpoints
+                if self.panel_focus == PanelFocus::Collections {
+                    // Switch focus to endpoints panel
+                    self.panel_focus = PanelFocus::Endpoints;
+                    self.selected_endpoint_index = 0;
+                } else if self.panel_focus == PanelFocus::Endpoints {
+                    // Select the endpoint to view details
+                    if let Some(collection) = self.collections.get(self.selected_collection_index) {
+                        if self.selected_endpoint_index < collection.endpoints.len() {
+                            self.current_screen = Screen::EndpointDetail(
+                                self.selected_collection_index,
+                                self.selected_endpoint_index
+                            );
+                        }
+                    }
                 }
             }
             Screen::EndpointList(coll_idx) => {
@@ -163,7 +222,7 @@ impl AppState {
                         
                         self.last_response = Some(response);
                         self.last_response_formatted = Some(formatted);
-                        self.current_screen = Screen::ResponseView(coll_idx, ep_idx);
+                        // Stay on the same screen in new layout
                         self.status_message = Some("Request completed successfully".to_string());
                         self.error_message = None;
                     }

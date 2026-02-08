@@ -8,7 +8,7 @@ use ratatui::{
     Frame, Terminal,
 };
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -70,6 +70,58 @@ fn run_app_loop<B: Backend>(
                 
                 // Handle edit screens - they need character input
                 let in_edit_screen = matches!(app.current_screen, Screen::CollectionEdit(_) | Screen::EndpointEdit(_, _));
+                
+                // Handle Ctrl+ijkl for panel navigation (not in edit screens)
+                if !in_edit_screen && key.modifiers.contains(KeyModifiers::CONTROL) {
+                    match key.code {
+                        KeyCode::Char('k') => {
+                            // Ctrl+k: Navigate up in current panel
+                            let max = match app.panel_focus {
+                                crate::tui_app::PanelFocus::Collections => app.collections.len(),
+                                crate::tui_app::PanelFocus::Endpoints => {
+                                    app.collections.get(app.selected_collection_index)
+                                        .map(|c| c.endpoints.len())
+                                        .unwrap_or(0)
+                                }
+                            };
+                            if max > 0 {
+                                app.navigate_up();
+                            }
+                            continue;
+                        }
+                        KeyCode::Char('j') => {
+                            // Ctrl+j: Navigate down in current panel
+                            let max = match app.panel_focus {
+                                crate::tui_app::PanelFocus::Collections => app.collections.len(),
+                                crate::tui_app::PanelFocus::Endpoints => {
+                                    app.collections.get(app.selected_collection_index)
+                                        .map(|c| c.endpoints.len())
+                                        .unwrap_or(0)
+                                }
+                            };
+                            if max > 0 {
+                                app.navigate_down(max);
+                            }
+                            continue;
+                        }
+                        KeyCode::Char('h') => {
+                            // Ctrl+h: Switch to collections panel (left)
+                            app.panel_focus = crate::tui_app::PanelFocus::Collections;
+                            continue;
+                        }
+                        KeyCode::Char('l') => {
+                            // Ctrl+l: Switch to endpoints panel (right)
+                            app.panel_focus = crate::tui_app::PanelFocus::Endpoints;
+                            continue;
+                        }
+                        KeyCode::Char('i') => {
+                            // Ctrl+i: Toggle between panels (like Tab)
+                            app.toggle_panel_focus();
+                            continue;
+                        }
+                        _ => {}
+                    }
+                }
                 
                 match key.code {
                     KeyCode::Char('q') => {
@@ -144,7 +196,17 @@ fn run_app_loop<B: Backend>(
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         if !in_edit_screen {
-                            app.navigate_up();
+                            let max = match app.panel_focus {
+                                crate::tui_app::PanelFocus::Collections => app.collections.len(),
+                                crate::tui_app::PanelFocus::Endpoints => {
+                                    app.collections.get(app.selected_collection_index)
+                                        .map(|c| c.endpoints.len())
+                                        .unwrap_or(0)
+                                }
+                            };
+                            if max > 0 {
+                                app.navigate_up();
+                            }
                         } else if key.code == KeyCode::Char('k') {
                             // In edit screen, 'k' is just a character
                             match &app.current_screen {
@@ -170,14 +232,17 @@ fn run_app_loop<B: Backend>(
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         if !in_edit_screen {
-                            let max = match &app.current_screen {
-                                Screen::CollectionList => app.collections.len(),
-                                Screen::EndpointList(idx) => {
-                                    app.collections.get(*idx).map(|c| c.endpoints.len()).unwrap_or(0)
+                            let max = match app.panel_focus {
+                                crate::tui_app::PanelFocus::Collections => app.collections.len(),
+                                crate::tui_app::PanelFocus::Endpoints => {
+                                    app.collections.get(app.selected_collection_index)
+                                        .map(|c| c.endpoints.len())
+                                        .unwrap_or(0)
                                 }
-                                _ => 0,
                             };
-                            app.navigate_down(max);
+                            if max > 0 {
+                                app.navigate_down(max);
+                            }
                         } else if key.code == KeyCode::Char('j') {
                             // In edit screen, 'j' is just a character
                             match &app.current_screen {
@@ -216,6 +281,22 @@ fn run_app_loop<B: Backend>(
                                     }
                                 } else {
                                     app.save_endpoint();
+                                }
+                            }
+                            Screen::CollectionList => {
+                                // In new layout, Enter selects endpoint to view
+                                if app.panel_focus == crate::tui_app::PanelFocus::Endpoints {
+                                    if let Some(collection) = app.collections.get(app.selected_collection_index) {
+                                        if app.selected_endpoint_index < collection.endpoints.len() {
+                                            app.current_screen = Screen::EndpointDetail(
+                                                app.selected_collection_index,
+                                                app.selected_endpoint_index
+                                            );
+                                        }
+                                    }
+                                } else {
+                                    // Switch to endpoints panel
+                                    app.panel_focus = crate::tui_app::PanelFocus::Endpoints;
                                 }
                             }
                             _ => {
@@ -297,61 +378,75 @@ fn run_app_loop<B: Backend>(
                             // Not in edit screen, handle as commands
                             match c {
                                 'n' => {
-                                    // New collection or endpoint
-                                    match &app.current_screen {
-                                        Screen::CollectionList => {
+                                    // New collection or endpoint based on panel focus
+                                    match app.panel_focus {
+                                        crate::tui_app::PanelFocus::Collections => {
                                             app.start_new_collection();
                                         }
-                                        Screen::EndpointList(coll_idx) => {
-                                            app.start_new_endpoint(*coll_idx);
+                                        crate::tui_app::PanelFocus::Endpoints => {
+                                            app.start_new_endpoint(app.selected_collection_index);
                                         }
-                                        _ => {}
                                     }
                                 }
                                 'e' => {
-                                    // Edit or Execute
-                                    match &app.current_screen {
-                                        Screen::CollectionList => {
-                                            if app.selected_index < app.collections.len() {
-                                                app.start_edit_collection(app.selected_index);
+                                    // Edit or Execute based on context
+                                    if matches!(app.current_screen, Screen::EndpointDetail(_, _)) {
+                                        // Execute request
+                                        let runtime = tokio::runtime::Runtime::new().unwrap();
+                                        runtime.block_on(app.execute_request(
+                                            app.selected_collection_index,
+                                            app.selected_endpoint_index
+                                        ));
+                                    } else {
+                                        // Edit collection or endpoint based on panel focus
+                                        match app.panel_focus {
+                                            crate::tui_app::PanelFocus::Collections => {
+                                                if app.selected_collection_index < app.collections.len() {
+                                                    app.start_edit_collection(app.selected_collection_index);
+                                                }
                                             }
-                                        }
-                                        Screen::EndpointList(coll_idx) => {
-                                            if let Some(collection) = app.collections.get(*coll_idx) {
-                                                if app.selected_index < collection.endpoints.len() {
-                                                    app.start_edit_endpoint(*coll_idx, app.selected_index);
+                                            crate::tui_app::PanelFocus::Endpoints => {
+                                                if let Some(collection) = app.collections.get(app.selected_collection_index) {
+                                                    if app.selected_endpoint_index < collection.endpoints.len() {
+                                                        app.start_edit_endpoint(
+                                                            app.selected_collection_index,
+                                                            app.selected_endpoint_index
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
-                                        Screen::EndpointDetail(coll_idx, ep_idx) => {
-                                            let runtime = tokio::runtime::Runtime::new().unwrap();
-                                            runtime.block_on(app.execute_request(*coll_idx, *ep_idx));
-                                        }
-                                        _ => {}
                                     }
                                 }
                                 'd' => {
-                                    // Delete collection or endpoint
-                                    match &app.current_screen {
-                                        Screen::CollectionList => {
-                                            if app.selected_index < app.collections.len() {
-                                                app.confirm_delete_collection(app.selected_index);
+                                    // Delete collection or endpoint based on panel focus
+                                    match app.panel_focus {
+                                        crate::tui_app::PanelFocus::Collections => {
+                                            if app.selected_collection_index < app.collections.len() {
+                                                app.confirm_delete_collection(app.selected_collection_index);
                                             }
                                         }
-                                        Screen::EndpointList(coll_idx) => {
-                                            if let Some(collection) = app.collections.get(*coll_idx) {
-                                                if app.selected_index < collection.endpoints.len() {
-                                                    app.confirm_delete_endpoint(*coll_idx, app.selected_index);
+                                        crate::tui_app::PanelFocus::Endpoints => {
+                                            if let Some(collection) = app.collections.get(app.selected_collection_index) {
+                                                if app.selected_endpoint_index < collection.endpoints.len() {
+                                                    app.confirm_delete_endpoint(
+                                                        app.selected_collection_index,
+                                                        app.selected_endpoint_index
+                                                    );
                                                 }
                                             }
                                         }
-                                        _ => {}
                                     }
                                 }
                                 'l' => {
-                                    // Start load test
-                                    if let Screen::EndpointDetail(coll_idx, ep_idx) = app.current_screen {
-                                        app.start_load_test(coll_idx, ep_idx);
+                                    // Start load test if endpoint is selected
+                                    if let Some(collection) = app.collections.get(app.selected_collection_index) {
+                                        if app.selected_endpoint_index < collection.endpoints.len() {
+                                            app.start_load_test(
+                                                app.selected_collection_index,
+                                                app.selected_endpoint_index
+                                            );
+                                        }
                                     }
                                 }
                                 _ => {}
@@ -430,34 +525,75 @@ fn run_app_loop<B: Backend>(
 }
 
 fn draw_ui(f: &mut Frame, app: &AppState) {
-    let chunks = Layout::default()
+    // For full-screen modes (edit, help, dialogs), use old layout
+    let use_split_layout = matches!(
+        app.current_screen,
+        Screen::CollectionList | Screen::EndpointList(_) | Screen::EndpointDetail(_, _) | Screen::ResponseView(_, _)
+    );
+    
+    if !use_split_layout {
+        // Old full-screen layout for edit screens, help, etc.
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(3),
+                Constraint::Min(0),
+                Constraint::Length(3),
+            ])
+            .split(f.area());
+
+        draw_title(f, chunks[0]);
+        
+        match &app.current_screen {
+            Screen::CollectionEdit(_) => draw_collection_edit(f, chunks[1], app),
+            Screen::EndpointEdit(coll_idx, _) => draw_endpoint_edit(f, chunks[1], app, *coll_idx),
+            Screen::LoadTestConfig(_, _) => draw_help(f, chunks[1]),
+            Screen::LoadTestRunning(coll_idx, ep_idx) => draw_load_test(f, chunks[1], app, *coll_idx, *ep_idx),
+            Screen::ConfirmDelete(_) => draw_confirm_delete(f, chunks[1], app),
+            Screen::Help => draw_help(f, chunks[1]),
+            _ => {}
+        }
+        
+        draw_footer(f, chunks[2], app);
+        return;
+    }
+    
+    // New split-panel layout (Option B)
+    let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
-            Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(3),  // Title
+            Constraint::Min(0),     // Main content
+            Constraint::Length(3),  // Footer
         ])
         .split(f.area());
 
-    // Title
-    draw_title(f, chunks[0]);
+    draw_title(f, main_chunks[0]);
 
-    // Main content
-    match &app.current_screen {
-        Screen::CollectionList => draw_collection_list(f, chunks[1], app),
-        Screen::CollectionEdit(_) => draw_collection_edit(f, chunks[1], app),
-        Screen::EndpointList(idx) => draw_endpoint_list(f, chunks[1], app, *idx),
-        Screen::EndpointEdit(coll_idx, _) => draw_endpoint_edit(f, chunks[1], app, *coll_idx),
-        Screen::EndpointDetail(coll_idx, ep_idx) => draw_endpoint_detail(f, chunks[1], app, *coll_idx, *ep_idx),
-        Screen::ResponseView(coll_idx, ep_idx) => draw_response_view(f, chunks[1], app, *coll_idx, *ep_idx),
-        Screen::LoadTestConfig(_, _) => draw_help(f, chunks[1]), // TODO: implement config screen
-        Screen::LoadTestRunning(coll_idx, ep_idx) => draw_load_test(f, chunks[1], app, *coll_idx, *ep_idx),
-        Screen::ConfirmDelete(_) => draw_confirm_delete(f, chunks[1], app),
-        Screen::Help => draw_help(f, chunks[1]),
-    }
+    // Split main area horizontally: left (definition) and right (collections)
+    let horizontal_chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(65),  // Left: API definition
+            Constraint::Percentage(35),  // Right: Collections & Endpoints
+        ])
+        .split(main_chunks[1]);
 
-    // Footer
-    draw_footer(f, chunks[2], app);
+    // Split left panel vertically: definition (top) and response (bottom)
+    let left_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(50),  // API definition
+            Constraint::Percentage(50),  // Response
+        ])
+        .split(horizontal_chunks[0]);
+
+    // Draw the three panels
+    draw_definition_panel(f, left_chunks[0], app);
+    draw_response_panel(f, left_chunks[1], app);
+    draw_collections_panel(f, horizontal_chunks[1], app);
+
+    draw_footer(f, main_chunks[2], app);
 }
 
 fn draw_title(f: &mut Frame, area: Rect) {
@@ -479,7 +615,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &AppState) {
             Span::styled(status, Style::default().fg(Color::Green)),
         ])
     } else {
-        Line::from("Press '?' for help | 'q' to quit")
+        Line::from("Ctrl+h/l: switch panels | Ctrl+j/k: navigate | '?': help | 'q': quit")
     };
     
     let footer = Paragraph::new(text)
@@ -930,4 +1066,299 @@ fn draw_help(f: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
+}
+
+
+// New split-panel drawing functions for Option B layout
+
+fn draw_definition_panel(f: &mut Frame, area: Rect, app: &AppState) {
+    use crate::tui_app::PanelFocus;
+    
+    let is_focused = app.panel_focus == PanelFocus::Collections || app.panel_focus == PanelFocus::Endpoints;
+    let border_style = if !is_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    
+    // Check if an endpoint is selected
+    if let Some(collection) = app.collections.get(app.selected_collection_index) {
+        if let Some(endpoint) = collection.endpoints.get(app.selected_endpoint_index) {
+            // Show endpoint details
+            let mut text = vec![
+                Line::from(""),
+                Line::from(vec![
+                    Span::styled("Method: ", Style::default().fg(Color::Gray)),
+                    Span::styled(format!("{:?}", endpoint.method), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                ]),
+                Line::from(vec![
+                    Span::styled("URL: ", Style::default().fg(Color::Gray)),
+                    Span::raw(&endpoint.url),
+                ]),
+                Line::from(""),
+            ];
+            
+            if let Some(desc) = &endpoint.description {
+                text.push(Line::from(vec![
+                    Span::styled("Description: ", Style::default().fg(Color::Gray)),
+                    Span::raw(desc),
+                ]));
+                text.push(Line::from(""));
+            }
+            
+            text.push(Line::from(vec![
+                Span::styled("Headers:", Style::default().fg(Color::Yellow)),
+            ]));
+            
+            if endpoint.headers.is_empty() {
+                text.push(Line::from("  (none)"));
+            } else {
+                for (key, value) in &endpoint.headers {
+                    text.push(Line::from(format!("  {}: {}", key, value)));
+                }
+            }
+            
+            if let Some(auth) = &endpoint.auth {
+                text.push(Line::from(""));
+                text.push(Line::from(vec![
+                    Span::styled("Authentication: ", Style::default().fg(Color::Yellow)),
+                    Span::raw(format!("{:?}", auth)),
+                ]));
+            }
+            
+            if let Some(body) = &endpoint.body_template {
+                text.push(Line::from(""));
+                text.push(Line::from(vec![
+                    Span::styled("Body:", Style::default().fg(Color::Yellow)),
+                ]));
+                text.push(Line::from(format!("  {}", body)));
+            }
+            
+            text.push(Line::from(""));
+            text.push(Line::from(""));
+            text.push(Line::from(vec![
+                Span::styled("Actions:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]));
+            text.push(Line::from("  [e] Execute Request"));
+            text.push(Line::from("  [l] Start Load Test"));
+
+            let paragraph = Paragraph::new(text)
+                .block(Block::default()
+                    .title(format!("Endpoint: {}", endpoint.name))
+                    .borders(Borders::ALL)
+                    .border_style(border_style))
+                .wrap(Wrap { trim: true });
+
+            f.render_widget(paragraph, area);
+            return;
+        }
+    }
+    
+    // No endpoint selected - show placeholder
+    let text = vec![
+        Line::from(""),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("No endpoint selected", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Select a collection and endpoint from the right panel", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Use Ctrl+h/l to switch panels", Style::default().fg(Color::DarkGray)),
+        ]),
+        Line::from(vec![
+            Span::styled("Use Ctrl+j/k to navigate", Style::default().fg(Color::DarkGray)),
+        ]),
+    ];
+    
+    let paragraph = Paragraph::new(text)
+        .block(Block::default()
+            .title("API Definition")
+            .borders(Borders::ALL)
+            .border_style(border_style))
+        .alignment(ratatui::layout::Alignment::Center);
+
+    f.render_widget(paragraph, area);
+}
+
+fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
+    if let Some(response) = &app.last_response {
+        // Show response
+        let header_text = format!(
+            "Response: {} - {:?} - {} bytes",
+            response.status,
+            response.duration,
+            response.body.len()
+        );
+        
+        let formatted_body = app.last_response_formatted.as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or("(unable to format response)");
+        
+        let paragraph = Paragraph::new(formatted_body)
+            .block(Block::default()
+                .title(header_text)
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green)))
+            .wrap(Wrap { trim: false });
+
+        f.render_widget(paragraph, area);
+    } else {
+        // No response yet
+        let text = vec![
+            Line::from(""),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("No response yet", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Execute a request to see the response here", Style::default().fg(Color::DarkGray)),
+            ]),
+        ];
+        
+        let paragraph = Paragraph::new(text)
+            .block(Block::default()
+                .title("Response")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::DarkGray)))
+            .alignment(ratatui::layout::Alignment::Center);
+
+        f.render_widget(paragraph, area);
+    }
+}
+
+fn draw_collections_panel(f: &mut Frame, area: Rect, app: &AppState) {
+    use crate::tui_app::PanelFocus;
+    
+    // Split into two sections: collections (top) and endpoints (bottom)
+    let sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Percentage(40),  // Collections
+            Constraint::Percentage(60),  // Endpoints
+        ])
+        .split(area);
+    
+    // Draw collections section
+    let collections_focused = app.panel_focus == PanelFocus::Collections;
+    let collections_border_style = if collections_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    
+    let collection_items: Vec<ListItem> = app
+        .collections
+        .iter()
+        .enumerate()
+        .map(|(i, collection)| {
+            let style = if i == app.selected_collection_index && collections_focused {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else if i == app.selected_collection_index {
+                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            
+            let content = format!("📁 {} ({} endpoints)", collection.name, collection.endpoints.len());
+            ListItem::new(content).style(style)
+        })
+        .collect();
+
+    let collections_title = if collections_focused {
+        "📁 Collections [n: new | e: edit | d: delete]"
+    } else {
+        "📁 Collections"
+    };
+    
+    let collections_list = List::new(collection_items)
+        .block(Block::default()
+            .title(collections_title)
+            .borders(Borders::ALL)
+            .border_style(collections_border_style))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
+        .highlight_symbol("▶ ");
+
+    f.render_widget(collections_list, sections[0]);
+    
+    // Draw endpoints section
+    let endpoints_focused = app.panel_focus == PanelFocus::Endpoints;
+    let endpoints_border_style = if endpoints_focused {
+        Style::default().fg(Color::Cyan)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    
+    if let Some(collection) = app.collections.get(app.selected_collection_index) {
+        let endpoint_items: Vec<ListItem> = collection
+            .endpoints
+            .iter()
+            .enumerate()
+            .map(|(i, endpoint)| {
+                let style = if i == app.selected_endpoint_index && endpoints_focused {
+                    Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                } else if i == app.selected_endpoint_index {
+                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                
+                let method_color = match endpoint.method {
+                    crate::models::HttpMethod::GET => Color::Green,
+                    crate::models::HttpMethod::POST => Color::Blue,
+                    crate::models::HttpMethod::PUT => Color::Yellow,
+                    crate::models::HttpMethod::DELETE => Color::Red,
+                    _ => Color::White,
+                };
+                
+                let content = Line::from(vec![
+                    Span::styled(format!("{:?} ", endpoint.method), Style::default().fg(method_color).add_modifier(Modifier::BOLD)),
+                    Span::raw(&endpoint.name),
+                ]);
+                
+                ListItem::new(content).style(style)
+            })
+            .collect();
+
+        let endpoints_title = if endpoints_focused {
+            format!("Endpoints - {} [n: new | e: edit | d: delete]", collection.name)
+        } else {
+            format!("Endpoints - {}", collection.name)
+        };
+        
+        let endpoints_list = List::new(endpoint_items)
+            .block(Block::default()
+                .title(endpoints_title)
+                .borders(Borders::ALL)
+                .border_style(endpoints_border_style))
+            .highlight_style(Style::default().add_modifier(Modifier::BOLD))
+            .highlight_symbol("→ ");
+
+        f.render_widget(endpoints_list, sections[1]);
+    } else {
+        // No collection selected
+        let text = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("No collections", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Press 'n' to create a new collection", Style::default().fg(Color::DarkGray)),
+            ]),
+        ];
+        
+        let paragraph = Paragraph::new(text)
+            .block(Block::default()
+                .title("Endpoints")
+                .borders(Borders::ALL)
+                .border_style(endpoints_border_style))
+            .alignment(ratatui::layout::Alignment::Center);
+
+        f.render_widget(paragraph, sections[1]);
+    }
 }
