@@ -539,6 +539,12 @@ fn run_app_loop<B: Backend>(
                             app.reset_response_scroll();
                         }
                     }
+                    KeyCode::End => {
+                        // Scroll to bottom of response
+                        if !in_edit_screen {
+                            app.scroll_response_to_end();
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -1259,7 +1265,7 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             
             // Add scroll indicator if needed
             let title_with_scroll = if total_lines > visible_height {
-                format!("{} [{}/{}]", header_text, scroll_offset + 1, total_lines)
+                format!("{} [{}-{}/{}]", header_text, scroll_offset + 1, (scroll_offset + visible_height).min(total_lines), total_lines)
             } else {
                 header_text.clone()
             };
@@ -1307,7 +1313,7 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             
             // Add scroll indicator if needed
             let title_with_scroll = if total_lines > visible_height {
-                format!("{} [{}/{}]", header_text, scroll_offset + 1, total_lines)
+                format!("{} [{}-{}/{}]", header_text, scroll_offset + 1, (scroll_offset + visible_height).min(total_lines), total_lines)
             } else {
                 header_text
             };

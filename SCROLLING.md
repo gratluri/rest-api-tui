@@ -8,13 +8,18 @@ The response panel now supports vertical scrolling, allowing you to view large r
 
 ### Automatic Scroll Indicator
 
-When a response is larger than the visible area, a scroll indicator appears in the title bar:
+When a response is larger than the visible area, a scroll indicator appears in the title bar showing the range of visible lines:
 
 ```
-Response: 200 OK - 123ms - 456 bytes [25/150]
-                                      ^^^^^^^^
-                                      Current line / Total lines
+Response: 200 OK - 123ms - 456 bytes [25-44/150]
+                                      ^^^^^^^^^^^
+                                      Lines 25-44 visible out of 150 total
 ```
+
+The indicator shows:
+- First visible line number (1-indexed)
+- Last visible line number  
+- Total number of lines
 
 ### Keyboard Controls
 
@@ -23,6 +28,7 @@ Response: 200 OK - 123ms - 456 bytes [25/150]
 | **PageDown** | Scroll down | 10 lines |
 | **PageUp** | Scroll up | 10 lines |
 | **Home** | Jump to top | Reset to line 1 |
+| **End** | Jump to bottom | Scroll to last line |
 
 ### Automatic Reset
 
@@ -52,7 +58,7 @@ Response: 200 OK - 123ms - 456 bytes [25/150]
 **At Top:**
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Response: 200 OK - 150ms - 5KB  [1/150] [PgUp/PgDn]    │
+│ Response: 200 OK - 150ms - 5KB  [1-20/150] [PgUp/PgDn] │
 ├─────────────────────────────────────────────────────────┤
 │ {                                                       │
 │   "users": [                                            │
@@ -65,14 +71,14 @@ Response: 200 OK - 123ms - 456 bytes [25/150]
 │       "id": 2,                                          │
 │       ...                                               │
 │                                                         │
-│ (more content below - press PageDown)                   │
+│ (more content below - press PageDown or End)            │
 └─────────────────────────────────────────────────────────┘
 ```
 
 **Scrolled Down:**
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Response: 200 OK - 150ms - 5KB  [75/150] [PgUp/PgDn]   │
+│ Response: 200 OK - 150ms - 5KB  [75-94/150] [PgUp/PgDn]│
 ├─────────────────────────────────────────────────────────┤
 │       "city": "New York"                                │
 │     },                                                  │
@@ -91,7 +97,7 @@ Response: 200 OK - 123ms - 456 bytes [25/150]
 **At Bottom:**
 ```
 ┌─────────────────────────────────────────────────────────┐
-│ Response: 200 OK - 150ms - 5KB  [141/150] [PgUp/PgDn]  │
+│ Response: 200 OK - 150ms - 5KB  [131-150/150] [Home]   │
 ├─────────────────────────────────────────────────────────┤
 │       "city": "Seattle"                                 │
 │     }                                                   │
@@ -101,7 +107,7 @@ Response: 200 OK - 123ms - 456 bytes [25/150]
 │   "per_page": 100                                       │
 │ }                                                       │
 │                                                         │
-│ (end of response)                                       │
+│ (end of response - press Home to go back to top)        │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -255,11 +261,11 @@ When network traffic is enabled (press 't'):
 - Helps estimate response size
 - Useful for pagination decisions
 
-### Tip 3: Jump to Top Frequently
+### Tip 3: Use End Key for Quick Jump
 
-- Press **Home** to reset scroll
-- Useful when comparing multiple responses
-- Ensures consistent starting point
+- Press **End** to instantly jump to the bottom
+- Press **Home** to instantly jump to the top
+- Faster than pressing PageDown multiple times
 
 ### Tip 4: Combine with Network Traffic
 
@@ -274,6 +280,7 @@ When network traffic is enabled (press 't'):
 | **PageDown** | Scroll response down (10 lines) |
 | **PageUp** | Scroll response up (10 lines) |
 | **Home** | Jump to top of response |
+| **End** | Jump to bottom of response |
 | **t** | Toggle network traffic view |
 | **e** | Execute request (resets scroll) |
 

@@ -124,6 +124,11 @@ impl AppState {
         self.response_scroll_offset = 0;
     }
     
+    pub fn scroll_response_to_end(&mut self) {
+        // Set to a very large number, will be clamped in draw function
+        self.response_scroll_offset = usize::MAX;
+    }
+    
     pub fn navigate_up(&mut self) {
         match self.panel_focus {
             PanelFocus::Collections => {
