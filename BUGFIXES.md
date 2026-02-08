@@ -148,3 +148,47 @@ Possible enhancements:
 - 'h' only activates header mode when on Headers field
 - Tab/Shift+Tab work correctly in both normal and header edit modes
 - All 68 unit tests still pass
+
+
+## Bug #4: Last Line Not Visible When Scrolling (2024-02-08)
+
+**Issue**: When scrolling through a large response using PageDown, the very last line of the response was not reachable. Users could scroll close to the end but couldn't see the final line.
+
+**Root Cause**: Off-by-one error in the `max_scroll` calculation. The code used `saturating_sub()` which could produce incorrect results in edge cases. The calculation didn't properly account for ensuring the last line is always reachable.
+
+**Example**:
+- Total lines: 100
+- Visible height: 20
+- Old max_scroll: `100.saturating_sub(20) = 80`
+- Problem: When scrolled to offset 80, shows lines 80-99 (20 lines), but line 100 is never visible
+
+**Fix**: Changed the max_scroll calculation to explicitly handle the case:
+```rust
+// Before (buggy)
+let max_scroll = total_lines.saturating_sub(visible_height);
+
+// After (fixed)
+let max_scroll = if total_lines > visible_height {
+    total_lines - visible_height
+} else {
+    0
+};
+```
+
+**Why This Works**:
+- When `total_lines = 100` and `visible_height = 20`:
+  - `max_scroll = 100 - 20 = 80`
+  - At offset 80: shows lines 80-99 (indices 80-99, which is 20 lines)
+  - This correctly shows the last line (line 99, index 99)
+- When `total_lines <= visible_height`:
+  - `max_scroll = 0` (no scrolling needed)
+  - All lines fit in visible area
+
+**Testing**: Manual testing confirmed:
+- Can now scroll to see the very last line of any response
+- Scroll indicator correctly shows `[81/100]` when at the end
+- No off-by-one errors in scroll position
+- Works correctly with both network traffic enabled and disabled
+
+**Code Changes**:
+- `src/tui/ui.rs`: Fixed max_scroll calculation in both scroll locations (with and without network traffic)

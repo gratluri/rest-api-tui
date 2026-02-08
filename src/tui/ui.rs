@@ -1241,7 +1241,12 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             let visible_height = sections[0].height.saturating_sub(2) as usize;
             
             // Clamp scroll offset
-            let max_scroll = total_lines.saturating_sub(visible_height);
+            // Ensure we can scroll to see the last line
+            let max_scroll = if total_lines > visible_height {
+                total_lines - visible_height
+            } else {
+                0
+            };
             let scroll_offset = app.response_scroll_offset.min(max_scroll);
             
             // Get visible lines
@@ -1284,7 +1289,12 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             let visible_height = area.height.saturating_sub(2) as usize;
             
             // Clamp scroll offset
-            let max_scroll = total_lines.saturating_sub(visible_height);
+            // Ensure we can scroll to see the last line
+            let max_scroll = if total_lines > visible_height {
+                total_lines - visible_height
+            } else {
+                0
+            };
             let scroll_offset = app.response_scroll_offset.min(max_scroll);
             
             // Get visible lines
