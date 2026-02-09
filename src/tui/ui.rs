@@ -863,6 +863,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &AppState) {
     f.render_widget(footer, area);
 }
 
+#[allow(dead_code)]
 fn draw_collection_list(f: &mut Frame, area: Rect, app: &AppState) {
     let items: Vec<ListItem> = app
         .collections
@@ -889,6 +890,7 @@ fn draw_collection_list(f: &mut Frame, area: Rect, app: &AppState) {
     f.render_widget(list, area);
 }
 
+#[allow(dead_code)]
 fn draw_endpoint_list(f: &mut Frame, area: Rect, app: &AppState, coll_idx: usize) {
     if let Some(collection) = app.collections.get(coll_idx) {
         let items: Vec<ListItem> = collection
@@ -929,6 +931,7 @@ fn draw_endpoint_list(f: &mut Frame, area: Rect, app: &AppState, coll_idx: usize
     }
 }
 
+#[allow(dead_code)]
 fn draw_endpoint_detail(f: &mut Frame, area: Rect, app: &AppState, coll_idx: usize, ep_idx: usize) {
     if let Some(collection) = app.collections.get(coll_idx) {
         if let Some(endpoint) = collection.endpoints.get(ep_idx) {
@@ -976,6 +979,7 @@ fn draw_endpoint_detail(f: &mut Frame, area: Rect, app: &AppState, coll_idx: usi
     }
 }
 
+#[allow(dead_code)]
 fn draw_response_view(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _ep_idx: usize) {
     if let Some(response) = &app.last_response {
         let chunks = Layout::default()
@@ -1025,7 +1029,7 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
             .split(area);
 
         // Progress with animation
-        let progress = if let Some(engine) = &app.load_test_engine {
+        let _progress = if let Some(engine) = &app.load_test_engine {
             let elapsed = engine.elapsed();
             let elapsed_secs = elapsed.as_secs_f64();
             let total = app.load_test_config.duration.as_secs_f64();
