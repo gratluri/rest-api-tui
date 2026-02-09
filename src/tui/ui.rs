@@ -637,6 +637,10 @@ fn run_app_loop<B: Backend>(
                                     // Toggle network traffic display
                                     app.toggle_network_traffic();
                                 }
+                                'H' => {
+                                    // Toggle response headers display
+                                    app.toggle_response_headers();
+                                }
                                 _ => {}
                             }
                         }
@@ -1780,15 +1784,17 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             .any(|(k, v)| k.to_lowercase() == "content-type" && v.to_lowercase().contains("json"));
         
         let json_indicator = if is_json { " 🎨 JSON" } else { "" };
+        let headers_toggle = if app.show_response_headers { "hide" } else { "show" };
         
         let header_text = format!(
-            "{} Response: {} - {:?} - {} bytes{} [t: {} traffic | PgUp/PgDn: scroll]",
+            "{} Response: {} - {:?} - {} bytes{} [t: {} traffic | H: {} headers | PgUp/PgDn: scroll]",
             status_icon,
             response.status,
             response.duration,
             response.body.len(),
             json_indicator,
-            traffic_toggle
+            traffic_toggle,
+            headers_toggle
         );
         
         if app.show_network_traffic && response.traffic.is_some() {
@@ -1806,141 +1812,52 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
                 .map(|s| s.as_str())
                 .unwrap_or("(unable to format response)");
             
-            // Get visible lines with optional JSON colorization
-            let visible_lines = if is_json {
-                let colored_lines = colorize_json(formatted_body);
-                let total_lines = colored_lines.len();
-                let visible_height = sections[0].height.saturating_sub(2) as usize;
-                let max_scroll = if total_lines > visible_height {
-                    total_lines - visible_height
-                } else {
-                    0
-                };
-                let scroll_offset = app.response_scroll_offset.min(max_scroll);
+            // If headers are shown, split the top section further
+            if app.show_response_headers {
+                let body_sections = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(response.headers.len() as u16 + 2), // Headers
+                        Constraint::Min(0), // Body
+                    ])
+                    .split(sections[0]);
                 
-                colored_lines.into_iter()
-                    .skip(scroll_offset)
-                    .take(visible_height)
-                    .collect::<Vec<Line>>()
-            } else {
-                let lines: Vec<&str> = formatted_body.lines().collect();
-                let total_lines = lines.len();
-                let visible_height = sections[0].height.saturating_sub(2) as usize;
-                let max_scroll = if total_lines > visible_height {
-                    total_lines - visible_height
-                } else {
-                    0
-                };
-                let scroll_offset = app.response_scroll_offset.min(max_scroll);
+                // Draw headers
+                draw_response_headers(f, body_sections[0], response);
                 
-                lines.iter()
-                    .skip(scroll_offset)
-                    .take(visible_height)
-                    .map(|line| Line::from(*line))
-                    .collect()
-            };
-            
-            // Calculate total lines for scroll indicator
-            let total_lines = if is_json {
-                colorize_json(formatted_body).len()
+                // Draw body in remaining space
+                draw_response_body(f, body_sections[1], app, response, formatted_body, is_json, &header_text);
             } else {
-                formatted_body.lines().count()
-            };
-            let visible_height = sections[0].height.saturating_sub(2) as usize;
-            let scroll_offset = app.response_scroll_offset.min(if total_lines > visible_height {
-                total_lines - visible_height
-            } else {
-                0
-            });
-            
-            // Add scroll indicator if needed
-            let title_with_scroll = if total_lines > visible_height {
-                format!("{} [{}-{}/{}]", header_text, scroll_offset + 1, (scroll_offset + visible_height).min(total_lines), total_lines)
-            } else {
-                header_text.clone()
-            };
-            
-            let body_paragraph = Paragraph::new(visible_lines)
-                .block(Block::default()
-                    .title(title_with_scroll)
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Green)))
-                .wrap(Wrap { trim: false });
-
-            f.render_widget(body_paragraph, sections[0]);
+                // Draw body only
+                draw_response_body(f, sections[0], app, response, formatted_body, is_json, &header_text);
+            }
             
             // Draw network traffic
             draw_network_traffic(f, sections[1], response);
         } else {
-            // Show only response body with scrolling
+            // Show only response body with optional headers
             let formatted_body = app.last_response_formatted.as_ref()
                 .map(|s| s.as_str())
                 .unwrap_or("(unable to format response)");
             
-            // Get visible lines with optional JSON colorization
-            let visible_lines = if is_json {
-                let colored_lines = colorize_json(formatted_body);
-                let total_lines = colored_lines.len();
-                let visible_height = area.height.saturating_sub(2) as usize;
-                let max_scroll = if total_lines > visible_height {
-                    total_lines - visible_height
-                } else {
-                    0
-                };
-                let scroll_offset = app.response_scroll_offset.min(max_scroll);
+            if app.show_response_headers {
+                let sections = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(response.headers.len() as u16 + 2), // Headers
+                        Constraint::Min(0), // Body
+                    ])
+                    .split(area);
                 
-                colored_lines.into_iter()
-                    .skip(scroll_offset)
-                    .take(visible_height)
-                    .collect::<Vec<Line>>()
-            } else {
-                let lines: Vec<&str> = formatted_body.lines().collect();
-                let total_lines = lines.len();
-                let visible_height = area.height.saturating_sub(2) as usize;
-                let max_scroll = if total_lines > visible_height {
-                    total_lines - visible_height
-                } else {
-                    0
-                };
-                let scroll_offset = app.response_scroll_offset.min(max_scroll);
+                // Draw headers
+                draw_response_headers(f, sections[0], response);
                 
-                lines.iter()
-                    .skip(scroll_offset)
-                    .take(visible_height)
-                    .map(|line| Line::from(*line))
-                    .collect()
-            };
-            
-            // Calculate total lines for scroll indicator
-            let total_lines = if is_json {
-                colorize_json(formatted_body).len()
+                // Draw body
+                draw_response_body(f, sections[1], app, response, formatted_body, is_json, &header_text);
             } else {
-                formatted_body.lines().count()
-            };
-            let visible_height = area.height.saturating_sub(2) as usize;
-            let scroll_offset = app.response_scroll_offset.min(if total_lines > visible_height {
-                total_lines - visible_height
-            } else {
-                0
-            });
-            
-            // Add scroll indicator if needed
-            let title_with_scroll = if total_lines > visible_height {
-                format!("{} [{}-{}/{}]", header_text, scroll_offset + 1, (scroll_offset + visible_height).min(total_lines), total_lines)
-            } else {
-                header_text
-            };
-            
-            let paragraph = Paragraph::new(visible_lines)
-                .block(Block::default()
-                    .title(title_with_scroll)
-                    .borders(Borders::ALL)
-                    .border_type(BorderType::Rounded)
-                    .border_style(Style::default().fg(Color::Green)))
-                .wrap(Wrap { trim: false });
-
-            f.render_widget(paragraph, area);
+                // Draw body only
+                draw_response_body(f, area, app, response, formatted_body, is_json, &header_text);
+            }
         }
     } else {
         // No response yet
@@ -1970,6 +1887,104 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
 
         f.render_widget(paragraph, area);
     }
+}
+
+fn draw_response_headers(f: &mut Frame, area: Rect, response: &crate::http::HttpResponse) {
+    let mut header_lines = vec![
+        Line::from(vec![
+            Span::styled("📋 Response Headers", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+        ]),
+    ];
+    
+    for (key, value) in &response.headers {
+        header_lines.push(Line::from(vec![
+            Span::styled(format!("  {}: ", key), Style::default().fg(Color::Yellow)),
+            Span::raw(value),
+        ]));
+    }
+    
+    let paragraph = Paragraph::new(header_lines)
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Magenta)))
+        .wrap(Wrap { trim: true });
+    
+    f.render_widget(paragraph, area);
+}
+
+fn draw_response_body(
+    f: &mut Frame,
+    area: Rect,
+    app: &AppState,
+    _response: &crate::http::HttpResponse,
+    formatted_body: &str,
+    is_json: bool,
+    header_text: &str,
+) {
+    // Get visible lines with optional JSON colorization
+    let visible_lines = if is_json {
+        let colored_lines = colorize_json(formatted_body);
+        let total_lines = colored_lines.len();
+        let visible_height = area.height.saturating_sub(2) as usize;
+        let max_scroll = if total_lines > visible_height {
+            total_lines - visible_height
+        } else {
+            0
+        };
+        let scroll_offset = app.response_scroll_offset.min(max_scroll);
+        
+        colored_lines.into_iter()
+            .skip(scroll_offset)
+            .take(visible_height)
+            .collect::<Vec<Line>>()
+    } else {
+        let lines: Vec<&str> = formatted_body.lines().collect();
+        let total_lines = lines.len();
+        let visible_height = area.height.saturating_sub(2) as usize;
+        let max_scroll = if total_lines > visible_height {
+            total_lines - visible_height
+        } else {
+            0
+        };
+        let scroll_offset = app.response_scroll_offset.min(max_scroll);
+        
+        lines.iter()
+            .skip(scroll_offset)
+            .take(visible_height)
+            .map(|line| Line::from(*line))
+            .collect()
+    };
+    
+    // Calculate total lines for scroll indicator
+    let total_lines = if is_json {
+        colorize_json(formatted_body).len()
+    } else {
+        formatted_body.lines().count()
+    };
+    let visible_height = area.height.saturating_sub(2) as usize;
+    let scroll_offset = app.response_scroll_offset.min(if total_lines > visible_height {
+        total_lines - visible_height
+    } else {
+        0
+    });
+    
+    // Add scroll indicator if needed
+    let title_with_scroll = if total_lines > visible_height {
+        format!("{} [{}-{}/{}]", header_text, scroll_offset + 1, (scroll_offset + visible_height).min(total_lines), total_lines)
+    } else {
+        header_text.to_string()
+    };
+    
+    let paragraph = Paragraph::new(visible_lines)
+        .block(Block::default()
+            .title(title_with_scroll)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Green)))
+        .wrap(Wrap { trim: false });
+
+    f.render_widget(paragraph, area);
 }
 
 fn draw_network_traffic(f: &mut Frame, area: Rect, response: &crate::http::HttpResponse) {

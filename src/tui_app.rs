@@ -77,6 +77,7 @@ pub struct AppState {
     pub selected_index: usize, // For backward compatibility
     pub panel_focus: PanelFocus,
     pub show_network_traffic: bool, // Toggle for network traffic display
+    pub show_response_headers: bool, // Toggle for response headers display
     pub response_scroll_offset: usize, // Vertical scroll offset for response panel
     pub storage: StorageManager,
     pub http_client: HttpClient,
@@ -106,6 +107,7 @@ impl AppState {
             selected_index: 0,
             panel_focus: PanelFocus::Collections,
             show_network_traffic: false, // Disabled by default
+            show_response_headers: false, // Disabled by default
             response_scroll_offset: 0,
             storage,
             http_client,
@@ -123,6 +125,10 @@ impl AppState {
     
     pub fn toggle_network_traffic(&mut self) {
         self.show_network_traffic = !self.show_network_traffic;
+    }
+    
+    pub fn toggle_response_headers(&mut self) {
+        self.show_response_headers = !self.show_response_headers;
     }
     
     pub fn scroll_response_up(&mut self, lines: usize) {
@@ -634,6 +640,11 @@ impl AppState {
                     auth: None,
                     load_test_config: if let Some(idx) = form.editing_index {
                         collection.endpoints.get(idx).and_then(|e| e.load_test_config.clone())
+                    } else {
+                        None
+                    },
+                    timeout_secs: if let Some(idx) = form.editing_index {
+                        collection.endpoints.get(idx).and_then(|e| e.timeout_secs)
                     } else {
                         None
                     },

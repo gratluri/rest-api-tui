@@ -52,6 +52,8 @@ pub struct ApiEndpoint {
     pub auth: Option<AuthConfig>,
     pub description: Option<String>,
     pub load_test_config: Option<LoadTestConfigData>,
+    #[serde(default)]
+    pub timeout_secs: Option<u64>, // Request timeout in seconds
 }
 
 /// Load test configuration data (serializable)
@@ -117,6 +119,7 @@ impl ApiEndpoint {
             auth: None,
             description: None,
             load_test_config: None,
+            timeout_secs: None, // Use default timeout
         }
     }
 }
