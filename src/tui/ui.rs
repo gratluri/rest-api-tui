@@ -531,6 +531,12 @@ fn run_app_loop<B: Backend>(
                                             2 => form.url.push(c),
                                             3 => form.description.push(c),
                                             5 => form.body_template.push(c),
+                                            6 => {
+                                                // Only allow digits for timeout
+                                                if c.is_ascii_digit() {
+                                                    form.timeout_secs.push(c);
+                                                }
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -552,6 +558,12 @@ fn run_app_loop<B: Backend>(
                                             2 => form.url.push(c),
                                             3 => form.description.push(c),
                                             5 => form.body_template.push(c),
+                                            6 => {
+                                                // Only allow digits for timeout
+                                                if c.is_ascii_digit() {
+                                                    form.timeout_secs.push(c);
+                                                }
+                                            }
                                             _ => {}
                                         }
                                     }
@@ -679,6 +691,7 @@ fn run_app_loop<B: Backend>(
                                             2 => { form.url.pop(); }
                                             3 => { form.description.pop(); }
                                             5 => { form.body_template.pop(); }
+                                            6 => { form.timeout_secs.pop(); }
                                             _ => {}
                                         }
                                     }
@@ -696,7 +709,7 @@ fn run_app_loop<B: Backend>(
                                     app.cycle_header_field();
                                 } else {
                                     // Normal field navigation
-                                    form.current_field = (form.current_field + 1) % 6;
+                                    form.current_field = (form.current_field + 1) % 7;
                                 }
                             }
                         } else if let Screen::LoadTestConfig(_, _) = app.current_screen {
@@ -715,7 +728,7 @@ fn run_app_loop<B: Backend>(
                                 } else {
                                     // Normal field navigation
                                     form.current_field = if form.current_field == 0 {
-                                        5
+                                        6
                                     } else {
                                         form.current_field - 1
                                     };
@@ -1428,6 +1441,15 @@ fn draw_endpoint_edit(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usiz
             Span::styled("📦 Body Template: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::styled(&form.body_template, field_style(5)),
             Span::styled(cursor(5), field_style(5).add_modifier(Modifier::SLOW_BLINK)),
+        ]));
+        text.push(Line::from(""));
+        text.push(Line::from(vec![
+            Span::styled("⏱️  Timeout (seconds): ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(if form.timeout_secs.is_empty() { "(default: 30s)" } else { &form.timeout_secs }, field_style(6)),
+            Span::styled(cursor(6), field_style(6).add_modifier(Modifier::SLOW_BLINK)),
+        ]));
+        text.push(Line::from(vec![
+            Span::styled("   Leave empty for default timeout", Style::default().fg(Color::DarkGray)),
         ]));
         text.push(Line::from(""));
         

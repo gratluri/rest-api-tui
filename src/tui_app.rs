@@ -43,9 +43,10 @@ pub struct EndpointForm {
     pub description: String,
     pub headers: HashMap<String, String>,
     pub body_template: String,
+    pub timeout_secs: String, // Timeout in seconds (empty = use default)
     pub collection_index: usize,
     pub editing_index: Option<usize>,
-    pub current_field: usize, // 0=name, 1=method, 2=url, 3=description, 4=headers, 5=body
+    pub current_field: usize, // 0=name, 1=method, 2=url, 3=description, 4=headers, 5=body, 6=timeout
     pub header_edit_mode: bool, // true when editing headers
     pub header_key: String, // current header key being edited
     pub header_value: String, // current header value being edited
@@ -578,6 +579,7 @@ impl AppState {
             description: String::new(),
             headers: HashMap::new(),
             body_template: String::new(),
+            timeout_secs: String::new(), // Empty = use default
             collection_index,
             editing_index: None,
             current_field: 0,
@@ -599,6 +601,7 @@ impl AppState {
                     description: endpoint.description.clone().unwrap_or_default(),
                     headers: endpoint.headers.clone(),
                     body_template: endpoint.body_template.clone().unwrap_or_default(),
+                    timeout_secs: endpoint.timeout_secs.map(|t| t.to_string()).unwrap_or_default(),
                     collection_index,
                     editing_index: Some(endpoint_index),
                     current_field: 0,
@@ -625,6 +628,13 @@ impl AppState {
             }
             
             if let Some(collection) = self.collections.get_mut(form.collection_index) {
+                // Parse timeout from form
+                let timeout_secs = if form.timeout_secs.trim().is_empty() {
+                    None
+                } else {
+                    form.timeout_secs.trim().parse::<u64>().ok()
+                };
+                
                 let endpoint = ApiEndpoint {
                     id: if let Some(idx) = form.editing_index {
                         collection.endpoints.get(idx).map(|e| e.id).unwrap_or_else(|| uuid::Uuid::new_v4())
@@ -643,11 +653,7 @@ impl AppState {
                     } else {
                         None
                     },
-                    timeout_secs: if let Some(idx) = form.editing_index {
-                        collection.endpoints.get(idx).and_then(|e| e.timeout_secs)
-                    } else {
-                        None
-                    },
+                    timeout_secs,
                 };
                 
                 match form.editing_index {
