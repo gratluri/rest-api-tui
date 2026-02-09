@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, BarChart, Gauge, Sparkline},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, BarChart, Gauge, Sparkline, BorderType},
     Frame, Terminal,
 };
 use crossterm::{
@@ -14,6 +14,170 @@ use crossterm::{
 };
 use std::io;
 use std::time::Duration;
+
+/// Get spinner character based on elapsed time
+fn get_spinner(elapsed_millis: u128) -> &'static str {
+    let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    let index = (elapsed_millis / 100) % frames.len() as u128;
+    frames[index as usize]
+}
+
+/// Get pulsing color for active elements
+fn get_pulse_color(elapsed_millis: u128) -> Color {
+    let cycle = (elapsed_millis / 500) % 2;
+    if cycle == 0 {
+        Color::Cyan
+    } else {
+        Color::LightCyan
+    }
+}
+
+/// Colorize JSON text with syntax highlighting and rainbow bracket matching
+fn colorize_json(json_text: &str) -> Vec<Line<'_>> {
+    let mut lines = Vec::new();
+    let mut current_line = Vec::new();
+    let mut brace_stack: Vec<Color> = Vec::new();
+    let brace_colors = [
+        Color::Cyan,
+        Color::Yellow,
+        Color::Magenta,
+        Color::Green,
+        Color::Blue,
+        Color::LightCyan,
+        Color::LightYellow,
+        Color::LightMagenta,
+    ];
+    
+    let mut chars = json_text.chars().peekable();
+    let mut in_string = false;
+    let mut in_key = false;
+    let mut escape_next = false;
+    let mut buffer = String::new();
+    
+    while let Some(ch) = chars.next() {
+        if escape_next {
+            buffer.push(ch);
+            escape_next = false;
+            continue;
+        }
+        
+        if ch == '\\' && in_string {
+            buffer.push(ch);
+            escape_next = true;
+            continue;
+        }
+        
+        // Handle strings
+        if ch == '"' {
+            if in_string {
+                // End of string
+                buffer.push(ch);
+                let color = if in_key {
+                    Color::LightBlue
+                } else {
+                    Color::Green
+                };
+                current_line.push(Span::styled(buffer.clone(), Style::default().fg(color)));
+                buffer.clear();
+                in_string = false;
+                in_key = false;
+            } else {
+                // Start of string
+                if !buffer.is_empty() {
+                    current_line.push(Span::raw(buffer.clone()));
+                    buffer.clear();
+                }
+                in_string = true;
+                // Check if this is a key (followed by :)
+                let mut temp_chars = chars.clone();
+                while let Some(next_ch) = temp_chars.next() {
+                    if next_ch == ':' {
+                        in_key = true;
+                        break;
+                    } else if !next_ch.is_whitespace() {
+                        break;
+                    }
+                }
+                buffer.push(ch);
+            }
+            continue;
+        }
+        
+        if in_string {
+            buffer.push(ch);
+            continue;
+        }
+        
+        // Handle braces and brackets
+        if ch == '{' || ch == '[' {
+            if !buffer.is_empty() {
+                current_line.push(Span::raw(buffer.clone()));
+                buffer.clear();
+            }
+            let color = brace_colors[brace_stack.len() % brace_colors.len()];
+            brace_stack.push(color);
+            current_line.push(Span::styled(ch.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)));
+        } else if ch == '}' || ch == ']' {
+            if !buffer.is_empty() {
+                current_line.push(Span::raw(buffer.clone()));
+                buffer.clear();
+            }
+            let color = brace_stack.pop().unwrap_or(Color::White);
+            current_line.push(Span::styled(ch.to_string(), Style::default().fg(color).add_modifier(Modifier::BOLD)));
+        } else if ch == ':' {
+            if !buffer.is_empty() {
+                current_line.push(Span::raw(buffer.clone()));
+                buffer.clear();
+            }
+            current_line.push(Span::styled(":", Style::default().fg(Color::DarkGray)));
+        } else if ch == ',' {
+            if !buffer.is_empty() {
+                current_line.push(Span::raw(buffer.clone()));
+                buffer.clear();
+            }
+            current_line.push(Span::styled(",", Style::default().fg(Color::DarkGray)));
+        } else if ch == '\n' {
+            if !buffer.is_empty() {
+                // Check if buffer contains numbers, booleans, or null
+                let trimmed = buffer.trim();
+                if trimmed == "true" || trimmed == "false" {
+                    current_line.push(Span::styled(buffer.clone(), Style::default().fg(Color::Yellow)));
+                } else if trimmed == "null" {
+                    current_line.push(Span::styled(buffer.clone(), Style::default().fg(Color::Red)));
+                } else if trimmed.parse::<f64>().is_ok() {
+                    current_line.push(Span::styled(buffer.clone(), Style::default().fg(Color::Magenta)));
+                } else {
+                    current_line.push(Span::raw(buffer.clone()));
+                }
+                buffer.clear();
+            }
+            lines.push(Line::from(current_line.clone()));
+            current_line.clear();
+        } else {
+            buffer.push(ch);
+        }
+    }
+    
+    // Flush remaining buffer
+    if !buffer.is_empty() {
+        let trimmed = buffer.trim();
+        if trimmed == "true" || trimmed == "false" {
+            current_line.push(Span::styled(buffer.clone(), Style::default().fg(Color::Yellow)));
+        } else if trimmed == "null" {
+            current_line.push(Span::styled(buffer.clone(), Style::default().fg(Color::Red)));
+        } else if trimmed.parse::<f64>().is_ok() {
+            current_line.push(Span::styled(buffer.clone(), Style::default().fg(Color::Magenta)));
+        } else {
+            current_line.push(Span::raw(buffer));
+        }
+    }
+    
+    if !current_line.is_empty() {
+        lines.push(Line::from(current_line));
+    }
+    
+    lines
+}
 
 pub fn run_app() -> Result<(), Box<dyn std::error::Error>> {
     // Setup terminal
@@ -667,29 +831,35 @@ fn draw_ui(f: &mut Frame, app: &AppState) {
 }
 
 fn draw_title(f: &mut Frame, area: Rect) {
-    let title = Paragraph::new("🚀 REST API TUI - Terminal API Testing Tool")
+    let title = Paragraph::new("🚀 REST API TUI - Terminal API Testing Tool ⚡")
         .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Cyan)));
     f.render_widget(title, area);
 }
 
 fn draw_footer(f: &mut Frame, area: Rect, app: &AppState) {
     let text = if let Some(err) = &app.error_message {
         Line::from(vec![
-            Span::styled("Error: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled("✗ Error: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
             Span::styled(err, Style::default().fg(Color::Red)),
         ])
     } else if let Some(status) = &app.status_message {
         Line::from(vec![
-            Span::styled("✓ ", Style::default().fg(Color::Green)),
+            Span::styled("✓ ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             Span::styled(status, Style::default().fg(Color::Green)),
         ])
     } else {
-        Line::from("Ctrl+h/l: panels | Ctrl+j/k: nav | PgUp/PgDn: scroll | t: traffic | ?: help")
+        Line::from("⌨ Ctrl+h/l: panels | Ctrl+j/k: nav | PgUp/PgDn: scroll | t: traffic | ?: help")
     };
     
     let footer = Paragraph::new(text)
-        .block(Block::default().borders(Borders::ALL));
+        .block(Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::DarkGray)));
     f.render_widget(footer, area);
 }
 
@@ -854,20 +1024,36 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
             ])
             .split(area);
 
-        // Progress
+        // Progress with animation
         let progress = if let Some(engine) = &app.load_test_engine {
-            let elapsed = engine.elapsed().as_secs_f64();
+            let elapsed = engine.elapsed();
+            let elapsed_secs = elapsed.as_secs_f64();
             let total = app.load_test_config.duration.as_secs_f64();
-            (elapsed / total * 100.0).min(100.0) as u16
+            let percent = (elapsed_secs / total * 100.0).min(100.0) as u16;
+            
+            // Animated spinner and pulse color
+            let spinner = get_spinner(elapsed.as_millis());
+            let pulse_color = get_pulse_color(elapsed.as_millis());
+            
+            // Create gradient progress bar
+            let elapsed_str = format!("{}s", elapsed.as_secs());
+            let total_str = format!("{}s", app.load_test_config.duration.as_secs());
+            let title = format!("🚀 {} Load Test Progress - {} / {} ⚡", spinner, elapsed_str, total_str);
+            
+            let gauge = Gauge::default()
+                .block(Block::default()
+                    .title(title)
+                    .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
+                    .border_style(Style::default().fg(pulse_color)))
+                .gauge_style(Style::default().fg(Color::Green).bg(Color::DarkGray))
+                .percent(percent);
+            f.render_widget(gauge, chunks[0]);
+            
+            percent
         } else {
             0
         };
-
-        let gauge = Gauge::default()
-            .block(Block::default().title("Load Test Progress").borders(Borders::ALL))
-            .gauge_style(Style::default().fg(Color::Green))
-            .percent(progress);
-        f.render_widget(gauge, chunks[0]);
 
         // Calculate percentiles
         let percentiles = crate::load_test::calculate_percentiles(&metrics.latencies);
@@ -878,26 +1064,42 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
             std::time::Duration::default()
         };
 
-        // Stats with percentiles and charts
+        // Calculate success rate
+        let success_rate = if metrics.total_requests > 0 {
+            (metrics.successful_requests as f64 / metrics.total_requests as f64) * 100.0
+        } else {
+            0.0
+        };
+        
+        let failure_rate = if metrics.total_requests > 0 {
+            (metrics.failed_requests as f64 / metrics.total_requests as f64) * 100.0
+        } else {
+            0.0
+        };
+
+        // Stats with percentiles, icons, and percentages
         let mut stats_text = vec![
             Line::from(vec![
-                Span::styled("Total Requests: ", Style::default().fg(Color::Gray)),
+                Span::styled("📨 Total Requests: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{}", metrics.total_requests), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
             ]),
             Line::from(vec![
-                Span::styled("Successful: ", Style::default().fg(Color::Gray)),
+                Span::styled("✓ Successful: ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{}", metrics.successful_requests), Style::default().fg(Color::Green)),
-                Span::raw("  "),
-                Span::styled("Failed: ", Style::default().fg(Color::Gray)),
-                Span::styled(format!("{}", metrics.failed_requests), Style::default().fg(Color::Red)),
+                Span::styled(format!(" ({:.1}%)", success_rate), Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(vec![
-                Span::styled("Current RPS: ", Style::default().fg(Color::Gray)),
+                Span::styled("✗ Failed: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{}", metrics.failed_requests), Style::default().fg(Color::Red)),
+                Span::styled(format!(" ({:.1}%)", failure_rate), Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled("⚡ Current RPS: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{:.2}", metrics.current_rps), Style::default().fg(Color::Yellow)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Latency Percentiles:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled("📊 Latency Percentiles:", Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD)),
             ]),
             Line::from(vec![
                 Span::styled("  Avg: ", Style::default().fg(Color::Gray)),
@@ -926,41 +1128,8 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
         if !metrics.time_series.is_empty() {
             stats_text.push(Line::from(""));
             stats_text.push(Line::from(vec![
-                Span::styled("p95 Latency Trend (5s intervals):", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled("📈 Trends (5s intervals):", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             ]));
-            
-            // Prepare p95 latency data for sparkline
-            let p95_data: Vec<u64> = metrics.time_series.iter()
-                .map(|dp| dp.p95.as_millis() as u64)
-                .collect();
-            
-            if !p95_data.is_empty() {
-                let max_p95 = *p95_data.iter().max().unwrap_or(&1);
-                let min_p95 = *p95_data.iter().min().unwrap_or(&0);
-                
-                stats_text.push(Line::from(vec![
-                    Span::styled(format!("  {}ms - {}ms", min_p95, max_p95), Style::default().fg(Color::DarkGray)),
-                ]));
-            }
-            
-            stats_text.push(Line::from(""));
-            stats_text.push(Line::from(vec![
-                Span::styled("RPS Trend (5s intervals):", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            ]));
-            
-            // Prepare RPS data for sparkline
-            let rps_data: Vec<u64> = metrics.time_series.iter()
-                .map(|dp| dp.rps as u64)
-                .collect();
-            
-            if !rps_data.is_empty() {
-                let max_rps = *rps_data.iter().max().unwrap_or(&1);
-                let min_rps = *rps_data.iter().min().unwrap_or(&0);
-                
-                stats_text.push(Line::from(vec![
-                    Span::styled(format!("  {} - {} req/s", min_rps, max_rps), Style::default().fg(Color::DarkGray)),
-                ]));
-            }
         }
 
         // Split stats area to show text and sparklines side by side
@@ -972,9 +1141,13 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
             ])
             .split(chunks[1]);
 
-        // Draw text stats on the left
+        // Draw text stats on the left with rounded border
         let stats_paragraph = Paragraph::new(stats_text)
-            .block(Block::default().title("Statistics").borders(Borders::ALL));
+            .block(Block::default()
+                .title("📊 Statistics")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Magenta)));
         f.render_widget(stats_paragraph, stats_chunks[0]);
 
         // Draw sparklines on the right
@@ -1021,16 +1194,20 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
                 f.render_widget(y_axis, p95_layout[0]);
                 
                 // Determine color based on latency
-                let sparkline_style = if max_p95 < 100 {
-                    Style::default().fg(Color::Green)
+                let (sparkline_style, border_color) = if max_p95 < 100 {
+                    (Style::default().fg(Color::Green), Color::Green)
                 } else if max_p95 < 200 {
-                    Style::default().fg(Color::Yellow)
+                    (Style::default().fg(Color::Yellow), Color::Yellow)
                 } else {
-                    Style::default().fg(Color::Red)
+                    (Style::default().fg(Color::Red), Color::Red)
                 };
                 
                 let p95_sparkline = Sparkline::default()
-                    .block(Block::default().title("p95 Latency").borders(Borders::ALL))
+                    .block(Block::default()
+                        .title("📈 p95 Latency")
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(border_color)))
                     .data(&p95_data)
                     .style(sparkline_style);
                 f.render_widget(p95_sparkline, p95_layout[1]);
@@ -1069,21 +1246,29 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
                 f.render_widget(y_axis, rps_layout[0]);
                 
                 let rps_sparkline = Sparkline::default()
-                    .block(Block::default().title("RPS").borders(Borders::ALL))
+                    .block(Block::default()
+                        .title("⚡ RPS")
+                        .borders(Borders::ALL)
+                        .border_type(BorderType::Rounded)
+                        .border_style(Style::default().fg(Color::Cyan)))
                     .data(&rps_data)
                     .style(Style::default().fg(Color::Cyan));
                 f.render_widget(rps_sparkline, rps_layout[1]);
             }
         }
 
-        // Chart
+        // Enhanced Chart with icons and percentages
         let data = vec![
-            ("Success", metrics.successful_requests),
-            ("Failed", metrics.failed_requests),
+            ("✓ Success", metrics.successful_requests),
+            ("✗ Failed", metrics.failed_requests),
         ];
 
         let chart = BarChart::default()
-            .block(Block::default().title("Results").borders(Borders::ALL))
+            .block(Block::default()
+                .title("📊 Results")
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Green)))
             .data(&data)
             .bar_width(15)
             .bar_style(Style::default().fg(Color::Green))
@@ -1095,24 +1280,30 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
 fn draw_collection_edit(f: &mut Frame, area: Rect, app: &AppState) {
     if let Some(form) = &app.collection_form {
         let title = if form.editing_index.is_some() {
-            "Edit Collection [Enter: save | Esc: cancel]"
+            "✏️ Edit Collection [Enter: save | Esc: cancel]"
         } else {
-            "New Collection [Enter: save | Esc: cancel]"
+            "➕ New Collection [Enter: save | Esc: cancel]"
         };
         
         let text = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("Collection Name: ", Style::default().fg(Color::Cyan)),
+                Span::styled("📁 Collection Name: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled(&form.name, Style::default().fg(Color::Yellow)),
                 Span::styled("_", Style::default().fg(Color::Yellow).add_modifier(Modifier::SLOW_BLINK)),
             ]),
             Line::from(""),
-            Line::from("Type to enter name, press Enter to save"),
+            Line::from(vec![
+                Span::styled("⌨️  Type to enter name, press Enter to save", Style::default().fg(Color::DarkGray)),
+            ]),
         ];
         
         let paragraph = Paragraph::new(text)
-            .block(Block::default().title(title).borders(Borders::ALL))
+            .block(Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan)))
             .wrap(Wrap { trim: true });
         
         f.render_widget(paragraph, area);
@@ -1122,9 +1313,9 @@ fn draw_collection_edit(f: &mut Frame, area: Rect, app: &AppState) {
 fn draw_endpoint_edit(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize) {
     if let Some(form) = &app.endpoint_form {
         let title = if form.editing_index.is_some() {
-            "Edit Endpoint [Tab: next field | Enter: save | Esc: cancel]"
+            "✏️ Edit Endpoint [Tab: next field | Enter: save | Esc: cancel]"
         } else {
-            "New Endpoint [Tab: next field | Enter: save | Esc: cancel]"
+            "➕ New Endpoint [Tab: next field | Enter: save | Esc: cancel]"
         };
         
         let field_style = |field_num: usize| {
@@ -1143,28 +1334,37 @@ fn draw_endpoint_edit(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usiz
             }
         };
         
+        let method_icon = match form.method {
+            crate::models::HttpMethod::GET => "📥",
+            crate::models::HttpMethod::POST => "📤",
+            crate::models::HttpMethod::PUT => "✏️",
+            crate::models::HttpMethod::DELETE => "🗑️",
+            crate::models::HttpMethod::PATCH => "🔧",
+            _ => "📨",
+        };
+        
         let mut text = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("Name: ", Style::default().fg(Color::Cyan)),
+                Span::styled("📝 Name: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled(&form.name, field_style(0)),
                 Span::styled(cursor(0), field_style(0).add_modifier(Modifier::SLOW_BLINK)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Method: ", Style::default().fg(Color::Cyan)),
+                Span::styled(format!("{} Method: ", method_icon), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("{:?}", form.method), field_style(1)),
                 Span::styled(" (press 'm' to cycle)", Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("URL: ", Style::default().fg(Color::Cyan)),
+                Span::styled("🌐 URL: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled(&form.url, field_style(2)),
                 Span::styled(cursor(2), field_style(2).add_modifier(Modifier::SLOW_BLINK)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Description: ", Style::default().fg(Color::Cyan)),
+                Span::styled("📄 Description: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled(&form.description, field_style(3)),
                 Span::styled(cursor(3), field_style(3).add_modifier(Modifier::SLOW_BLINK)),
             ]),
@@ -1175,27 +1375,27 @@ fn draw_endpoint_edit(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usiz
         if form.header_edit_mode {
             // Header edit mode - show input fields
             text.push(Line::from(vec![
-                Span::styled("Headers (Edit Mode): ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled("📋 Headers (Edit Mode): ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             ]));
             text.push(Line::from(""));
             text.push(Line::from(vec![
-                Span::styled("  Key: ", Style::default().fg(Color::Cyan)),
+                Span::styled("  🔑 Key: ", Style::default().fg(Color::Cyan)),
                 Span::styled(&form.header_key, if form.header_edit_field == 0 { field_style(4) } else { Style::default() }),
                 Span::styled(if form.header_edit_field == 0 { "_" } else { "" }, field_style(4).add_modifier(Modifier::SLOW_BLINK)),
             ]));
             text.push(Line::from(vec![
-                Span::styled("  Value: ", Style::default().fg(Color::Cyan)),
+                Span::styled("  💎 Value: ", Style::default().fg(Color::Cyan)),
                 Span::styled(&form.header_value, if form.header_edit_field == 1 { field_style(4) } else { Style::default() }),
                 Span::styled(if form.header_edit_field == 1 { "_" } else { "" }, field_style(4).add_modifier(Modifier::SLOW_BLINK)),
             ]));
             text.push(Line::from(""));
             text.push(Line::from(vec![
-                Span::styled("  Tab: switch field | Enter: add | Esc: cancel", Style::default().fg(Color::DarkGray)),
+                Span::styled("  ⌨️  Tab: switch field | Enter: add | Esc: cancel", Style::default().fg(Color::DarkGray)),
             ]));
         } else {
             // Normal mode - show existing headers
             text.push(Line::from(vec![
-                Span::styled("Headers: ", Style::default().fg(Color::Cyan)),
+                Span::styled("📋 Headers: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled(format!("({}) ", form.headers.len()), Style::default().fg(Color::DarkGray)),
                 if form.current_field == 4 {
                     Span::styled("[press 'h' to add]", field_style(4))
@@ -1217,18 +1417,24 @@ fn draw_endpoint_edit(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usiz
         
         text.push(Line::from(""));
         text.push(Line::from(vec![
-            Span::styled("Body Template: ", Style::default().fg(Color::Cyan)),
+            Span::styled("📦 Body Template: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             Span::styled(&form.body_template, field_style(5)),
             Span::styled(cursor(5), field_style(5).add_modifier(Modifier::SLOW_BLINK)),
         ]));
         text.push(Line::from(""));
         
         if !form.header_edit_mode {
-            text.push(Line::from("Tab: next field | h: add header | Enter: save"));
+            text.push(Line::from(vec![
+                Span::styled("⌨️  Tab: next field | h: add header | Enter: save", Style::default().fg(Color::DarkGray)),
+            ]));
         }
         
         let paragraph = Paragraph::new(text)
-            .block(Block::default().title(title).borders(Borders::ALL))
+            .block(Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Cyan)))
             .wrap(Wrap { trim: true });
         
         f.render_widget(paragraph, area);
@@ -1274,6 +1480,7 @@ fn draw_confirm_delete(f: &mut Frame, area: Rect, app: &AppState) {
         let dialog = Paragraph::new(text)
             .block(Block::default()
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Red))
                 .style(Style::default().bg(Color::Black)))
             .wrap(Wrap { trim: true })
@@ -1285,38 +1492,42 @@ fn draw_confirm_delete(f: &mut Frame, area: Rect, app: &AppState) {
 
 fn draw_help(f: &mut Frame, area: Rect) {
     let help_text = vec![
-        Line::from(vec![Span::styled("Keyboard Shortcuts", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
+        Line::from(vec![Span::styled("⌨️  Keyboard Shortcuts", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))]),
         Line::from(""),
-        Line::from("Navigation:"),
+        Line::from(vec![Span::styled("🧭 Navigation:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
         Line::from("  ↑/k        - Move up"),
         Line::from("  ↓/j        - Move down"),
         Line::from("  Enter      - Select item"),
         Line::from("  Esc        - Go back"),
         Line::from("  q          - Quit (from main screen)"),
         Line::from(""),
-        Line::from("Collection Management:"),
+        Line::from(vec![Span::styled("📁 Collection Management:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
         Line::from("  n          - New collection/endpoint"),
         Line::from("  e          - Edit collection/endpoint"),
         Line::from("  d          - Delete collection/endpoint"),
         Line::from(""),
-        Line::from("Endpoint Actions:"),
+        Line::from(vec![Span::styled("🚀 Endpoint Actions:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
         Line::from("  e          - Execute request (from detail)"),
         Line::from("  l          - Start load test"),
         Line::from(""),
-        Line::from("Form Editing:"),
+        Line::from(vec![Span::styled("✏️ Form Editing:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
         Line::from("  Tab        - Next field"),
         Line::from("  m          - Cycle HTTP method"),
         Line::from("  Backspace  - Delete character"),
         Line::from("  Enter      - Save"),
         Line::from(""),
-        Line::from("Other:"),
+        Line::from(vec![Span::styled("🔧 Other:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
         Line::from("  ?          - Show this help"),
         Line::from(""),
-        Line::from("Press any key to close help"),
+        Line::from(vec![Span::styled("Press any key to close help", Style::default().fg(Color::DarkGray))]),
     ];
 
     let paragraph = Paragraph::new(help_text)
-        .block(Block::default().title("Help").borders(Borders::ALL))
+        .block(Block::default()
+            .title("❓ Help")
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Yellow)))
         .wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
@@ -1324,7 +1535,7 @@ fn draw_help(f: &mut Frame, area: Rect) {
 
 fn draw_load_test_config(f: &mut Frame, area: Rect, app: &AppState) {
     if let Some(form) = &app.load_test_config_form {
-        let title = "Load Test Configuration [Tab: next field | Enter: start | Esc: cancel]";
+        let title = "⚙️ Load Test Configuration [Tab: next field | Enter: start | Esc: cancel]";
         
         let concurrency_style = if form.current_field == 0 {
             Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
@@ -1355,34 +1566,34 @@ fn draw_load_test_config(f: &mut Frame, area: Rect, app: &AppState) {
         let mut text = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("Configure load test parameters:", Style::default().fg(Color::Cyan)),
+                Span::styled("🔧 Configure load test parameters:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Concurrency (workers): ", Style::default().fg(Color::Gray)),
+                Span::styled("👥 Concurrency (workers): ", Style::default().fg(Color::Cyan)),
                 Span::styled(&form.concurrency, concurrency_style),
                 Span::styled(if form.current_field == 0 { cursor } else { "" }, concurrency_style.add_modifier(Modifier::SLOW_BLINK)),
             ]),
             Line::from(vec![
-                Span::styled("  Number of concurrent workers (1-1000)", Style::default().fg(Color::DarkGray)),
+                Span::styled("   Number of concurrent workers (1-1000)", Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Duration (seconds): ", Style::default().fg(Color::Gray)),
+                Span::styled("⏱️  Duration (seconds): ", Style::default().fg(Color::Cyan)),
                 Span::styled(&form.duration, duration_style),
                 Span::styled(if form.current_field == 1 { cursor } else { "" }, duration_style.add_modifier(Modifier::SLOW_BLINK)),
             ]),
             Line::from(vec![
-                Span::styled("  Total test duration (1-3600)", Style::default().fg(Color::DarkGray)),
+                Span::styled("   Total test duration (1-3600)", Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Ramp-up (seconds): ", Style::default().fg(Color::Gray)),
+                Span::styled("📈 Ramp-up (seconds): ", Style::default().fg(Color::Cyan)),
                 Span::styled(if form.ramp_up.is_empty() { "(optional)" } else { &form.ramp_up }, ramp_up_style),
                 Span::styled(if form.current_field == 2 { cursor } else { "" }, ramp_up_style.add_modifier(Modifier::SLOW_BLINK)),
             ]),
             Line::from(vec![
-                Span::styled("  Gradually increase load over this period", Style::default().fg(Color::DarkGray)),
+                Span::styled("   Gradually increase load over this period", Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(""),
             Line::from(""),
@@ -1398,19 +1609,23 @@ fn draw_load_test_config(f: &mut Frame, area: Rect, app: &AppState) {
         };
         
         text.push(Line::from(vec![
-            Span::styled("Preview:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled("👁️  Preview:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
         ]));
-        text.push(Line::from(format!("  {} workers will execute requests for {} seconds", concurrency_val, duration_val)));
+        text.push(Line::from(format!("   {} workers will execute requests for {} seconds", concurrency_val, duration_val)));
         
         if let Some(ramp_up) = ramp_up_val {
-            text.push(Line::from(format!("  Load will ramp up over {} seconds", ramp_up)));
-            text.push(Line::from(format!("  Expected total requests: ~{}", concurrency_val * (duration_val - ramp_up / 2) as usize)));
+            text.push(Line::from(format!("   Load will ramp up over {} seconds", ramp_up)));
+            text.push(Line::from(format!("   Expected total requests: ~{}", concurrency_val * (duration_val - ramp_up / 2) as usize)));
         } else {
-            text.push(Line::from(format!("  Expected total requests: ~{}", concurrency_val * duration_val as usize)));
+            text.push(Line::from(format!("   Expected total requests: ~{}", concurrency_val * duration_val as usize)));
         }
         
         let paragraph = Paragraph::new(text)
-            .block(Block::default().title(title).borders(Borders::ALL))
+            .block(Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Magenta)))
             .wrap(Wrap { trim: true });
         
         f.render_widget(paragraph, area);
@@ -1434,14 +1649,23 @@ fn draw_definition_panel(f: &mut Frame, area: Rect, app: &AppState) {
     if let Some(collection) = app.collections.get(app.selected_collection_index) {
         if let Some(endpoint) = collection.endpoints.get(app.selected_endpoint_index) {
             // Show endpoint details
+            let method_icon = match endpoint.method {
+                crate::models::HttpMethod::GET => "📥",
+                crate::models::HttpMethod::POST => "📤",
+                crate::models::HttpMethod::PUT => "✏️",
+                crate::models::HttpMethod::DELETE => "🗑️",
+                crate::models::HttpMethod::PATCH => "🔧",
+                _ => "📨",
+            };
+            
             let mut text = vec![
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("Method: ", Style::default().fg(Color::Gray)),
-                    Span::styled(format!("{:?}", endpoint.method), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{} Method: ", method_icon), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{:?}", endpoint.method), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 ]),
                 Line::from(vec![
-                    Span::styled("URL: ", Style::default().fg(Color::Gray)),
+                    Span::styled("🌐 URL: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                     Span::raw(&endpoint.url),
                 ]),
                 Line::from(""),
@@ -1449,14 +1673,14 @@ fn draw_definition_panel(f: &mut Frame, area: Rect, app: &AppState) {
             
             if let Some(desc) = &endpoint.description {
                 text.push(Line::from(vec![
-                    Span::styled("Description: ", Style::default().fg(Color::Gray)),
+                    Span::styled("📄 Description: ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                     Span::raw(desc),
                 ]));
                 text.push(Line::from(""));
             }
             
             text.push(Line::from(vec![
-                Span::styled("Headers:", Style::default().fg(Color::Yellow)),
+                Span::styled("📋 Headers:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             ]));
             
             if endpoint.headers.is_empty() {
@@ -1470,7 +1694,7 @@ fn draw_definition_panel(f: &mut Frame, area: Rect, app: &AppState) {
             if let Some(auth) = &endpoint.auth {
                 text.push(Line::from(""));
                 text.push(Line::from(vec![
-                    Span::styled("Authentication: ", Style::default().fg(Color::Yellow)),
+                    Span::styled("🔐 Authentication: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                     Span::raw(format!("{:?}", auth)),
                 ]));
             }
@@ -1478,7 +1702,7 @@ fn draw_definition_panel(f: &mut Frame, area: Rect, app: &AppState) {
             if let Some(body) = &endpoint.body_template {
                 text.push(Line::from(""));
                 text.push(Line::from(vec![
-                    Span::styled("Body:", Style::default().fg(Color::Yellow)),
+                    Span::styled("📦 Body:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
                 ]));
                 text.push(Line::from(format!("  {}", body)));
             }
@@ -1486,15 +1710,16 @@ fn draw_definition_panel(f: &mut Frame, area: Rect, app: &AppState) {
             text.push(Line::from(""));
             text.push(Line::from(""));
             text.push(Line::from(vec![
-                Span::styled("Actions:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+                Span::styled("🚀 Actions:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
             ]));
             text.push(Line::from("  [e] Execute Request"));
             text.push(Line::from("  [l] Start Load Test"));
 
             let paragraph = Paragraph::new(text)
                 .block(Block::default()
-                    .title(format!("Endpoint: {}", endpoint.name))
+                    .title(format!("📍 Endpoint: {}", endpoint.name))
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(border_style))
                 .wrap(Wrap { trim: true });
 
@@ -1508,7 +1733,7 @@ fn draw_definition_panel(f: &mut Frame, area: Rect, app: &AppState) {
         Line::from(""),
         Line::from(""),
         Line::from(vec![
-            Span::styled("No endpoint selected", Style::default().fg(Color::DarkGray)),
+            Span::styled("📭 No endpoint selected", Style::default().fg(Color::DarkGray)),
         ]),
         Line::from(""),
         Line::from(vec![
@@ -1516,17 +1741,18 @@ fn draw_definition_panel(f: &mut Frame, area: Rect, app: &AppState) {
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Use Ctrl+h/l to switch panels", Style::default().fg(Color::DarkGray)),
+            Span::styled("⌨️  Use Ctrl+h/l to switch panels", Style::default().fg(Color::DarkGray)),
         ]),
         Line::from(vec![
-            Span::styled("Use Ctrl+j/k to navigate", Style::default().fg(Color::DarkGray)),
+            Span::styled("⌨️  Use Ctrl+j/k to navigate", Style::default().fg(Color::DarkGray)),
         ]),
     ];
     
     let paragraph = Paragraph::new(text)
         .block(Block::default()
-            .title("API Definition")
+            .title("📍 API Definition")
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(border_style))
         .alignment(ratatui::layout::Alignment::Center);
 
@@ -1537,8 +1763,21 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
     if let Some(response) = &app.last_response {
         // Show response with optional network traffic
         let traffic_toggle = if app.show_network_traffic { "hide" } else { "show" };
+        let status_icon = if response.status.is_success() {
+            "✓"
+        } else if response.status.is_client_error() || response.status.is_server_error() {
+            "✗"
+        } else {
+            "ℹ"
+        };
+        
+        // Check if response is JSON
+        let is_json = response.headers.iter()
+            .any(|(k, v)| k.to_lowercase() == "content-type" && v.contains("application/json"));
+        
         let header_text = format!(
-            "Response: {} - {:?} - {} bytes  [t: {} traffic | PgUp/PgDn: scroll]",
+            "{} Response: {} - {:?} - {} bytes  [t: {} traffic | PgUp/PgDn: scroll]",
+            status_icon,
             response.status,
             response.duration,
             response.body.len(),
@@ -1560,29 +1799,52 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
                 .map(|s| s.as_str())
                 .unwrap_or("(unable to format response)");
             
-            // Split formatted body into lines
-            let lines: Vec<&str> = formatted_body.lines().collect();
-            let total_lines = lines.len();
+            // Get visible lines with optional JSON colorization
+            let visible_lines = if is_json {
+                let colored_lines = colorize_json(formatted_body);
+                let total_lines = colored_lines.len();
+                let visible_height = sections[0].height.saturating_sub(2) as usize;
+                let max_scroll = if total_lines > visible_height {
+                    total_lines - visible_height
+                } else {
+                    0
+                };
+                let scroll_offset = app.response_scroll_offset.min(max_scroll);
+                
+                colored_lines.into_iter()
+                    .skip(scroll_offset)
+                    .take(visible_height)
+                    .collect::<Vec<Line>>()
+            } else {
+                let lines: Vec<&str> = formatted_body.lines().collect();
+                let total_lines = lines.len();
+                let visible_height = sections[0].height.saturating_sub(2) as usize;
+                let max_scroll = if total_lines > visible_height {
+                    total_lines - visible_height
+                } else {
+                    0
+                };
+                let scroll_offset = app.response_scroll_offset.min(max_scroll);
+                
+                lines.iter()
+                    .skip(scroll_offset)
+                    .take(visible_height)
+                    .map(|line| Line::from(*line))
+                    .collect()
+            };
             
-            // Calculate visible area height (subtract borders)
+            // Calculate total lines for scroll indicator
+            let total_lines = if is_json {
+                colorize_json(formatted_body).len()
+            } else {
+                formatted_body.lines().count()
+            };
             let visible_height = sections[0].height.saturating_sub(2) as usize;
-            
-            // Clamp scroll offset
-            // Ensure we can scroll to see the last line
-            let max_scroll = if total_lines > visible_height {
+            let scroll_offset = app.response_scroll_offset.min(if total_lines > visible_height {
                 total_lines - visible_height
             } else {
                 0
-            };
-            let scroll_offset = app.response_scroll_offset.min(max_scroll);
-            
-            // Get visible lines
-            let visible_lines: Vec<Line> = lines
-                .iter()
-                .skip(scroll_offset)
-                .take(visible_height)
-                .map(|line| Line::from(*line))
-                .collect();
+            });
             
             // Add scroll indicator if needed
             let title_with_scroll = if total_lines > visible_height {
@@ -1595,6 +1857,7 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
                 .block(Block::default()
                     .title(title_with_scroll)
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Green)))
                 .wrap(Wrap { trim: false });
 
@@ -1608,29 +1871,52 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
                 .map(|s| s.as_str())
                 .unwrap_or("(unable to format response)");
             
-            // Split formatted body into lines
-            let lines: Vec<&str> = formatted_body.lines().collect();
-            let total_lines = lines.len();
+            // Get visible lines with optional JSON colorization
+            let visible_lines = if is_json {
+                let colored_lines = colorize_json(formatted_body);
+                let total_lines = colored_lines.len();
+                let visible_height = area.height.saturating_sub(2) as usize;
+                let max_scroll = if total_lines > visible_height {
+                    total_lines - visible_height
+                } else {
+                    0
+                };
+                let scroll_offset = app.response_scroll_offset.min(max_scroll);
+                
+                colored_lines.into_iter()
+                    .skip(scroll_offset)
+                    .take(visible_height)
+                    .collect::<Vec<Line>>()
+            } else {
+                let lines: Vec<&str> = formatted_body.lines().collect();
+                let total_lines = lines.len();
+                let visible_height = area.height.saturating_sub(2) as usize;
+                let max_scroll = if total_lines > visible_height {
+                    total_lines - visible_height
+                } else {
+                    0
+                };
+                let scroll_offset = app.response_scroll_offset.min(max_scroll);
+                
+                lines.iter()
+                    .skip(scroll_offset)
+                    .take(visible_height)
+                    .map(|line| Line::from(*line))
+                    .collect()
+            };
             
-            // Calculate visible area height (subtract borders)
+            // Calculate total lines for scroll indicator
+            let total_lines = if is_json {
+                colorize_json(formatted_body).len()
+            } else {
+                formatted_body.lines().count()
+            };
             let visible_height = area.height.saturating_sub(2) as usize;
-            
-            // Clamp scroll offset
-            // Ensure we can scroll to see the last line
-            let max_scroll = if total_lines > visible_height {
+            let scroll_offset = app.response_scroll_offset.min(if total_lines > visible_height {
                 total_lines - visible_height
             } else {
                 0
-            };
-            let scroll_offset = app.response_scroll_offset.min(max_scroll);
-            
-            // Get visible lines
-            let visible_lines: Vec<Line> = lines
-                .iter()
-                .skip(scroll_offset)
-                .take(visible_height)
-                .map(|line| Line::from(*line))
-                .collect();
+            });
             
             // Add scroll indicator if needed
             let title_with_scroll = if total_lines > visible_height {
@@ -1643,6 +1929,7 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
                 .block(Block::default()
                     .title(title_with_scroll)
                     .borders(Borders::ALL)
+                    .border_type(BorderType::Rounded)
                     .border_style(Style::default().fg(Color::Green)))
                 .wrap(Wrap { trim: false });
 
@@ -1654,7 +1941,7 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             Line::from(""),
             Line::from(""),
             Line::from(vec![
-                Span::styled("No response yet", Style::default().fg(Color::DarkGray)),
+                Span::styled("📭 No response yet", Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(""),
             Line::from(vec![
@@ -1662,14 +1949,15 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Press 't' to toggle network traffic view", Style::default().fg(Color::DarkGray)),
+                Span::styled("⌨️  Press 't' to toggle network traffic view", Style::default().fg(Color::DarkGray)),
             ]),
         ];
         
         let paragraph = Paragraph::new(text)
             .block(Block::default()
-                .title("Response")
+                .title("📨 Response")
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::DarkGray)))
             .alignment(ratatui::layout::Alignment::Center);
 
@@ -1681,39 +1969,39 @@ fn draw_network_traffic(f: &mut Frame, area: Rect, response: &crate::http::HttpR
     if let Some(traffic) = &response.traffic {
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("▼ Network Traffic ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled("📡 Network Traffic ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled("(Wireshark-style)", Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Timing Breakdown:", Style::default().fg(Color::Yellow)),
+                Span::styled("⏱️  Timing Breakdown:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             ]),
         ];
         
         // Timing information
         if let Some(dns) = traffic.timing.dns_lookup {
-            lines.push(Line::from(format!("  DNS Lookup:        {:?}", dns)));
+            lines.push(Line::from(format!("  🔍 DNS Lookup:        {:?}", dns)));
         }
         if let Some(tcp) = traffic.timing.tcp_connect {
-            lines.push(Line::from(format!("  TCP Connect:       {:?}", tcp)));
+            lines.push(Line::from(format!("  🔌 TCP Connect:       {:?}", tcp)));
         }
         if let Some(tls) = traffic.timing.tls_handshake {
-            lines.push(Line::from(format!("  TLS Handshake:     {:?}", tls)));
+            lines.push(Line::from(format!("  🔐 TLS Handshake:     {:?}", tls)));
         }
-        lines.push(Line::from(format!("  Request Sent:      {:?}", traffic.timing.request_sent)));
-        lines.push(Line::from(format!("  Waiting (TTFB):    {:?}", traffic.timing.waiting)));
-        lines.push(Line::from(format!("  Content Download:  {:?}", traffic.timing.content_download)));
+        lines.push(Line::from(format!("  📤 Request Sent:      {:?}", traffic.timing.request_sent)));
+        lines.push(Line::from(format!("  ⏳ Waiting (TTFB):    {:?}", traffic.timing.waiting)));
+        lines.push(Line::from(format!("  📥 Content Download:  {:?}", traffic.timing.content_download)));
         lines.push(Line::from(vec![
-            Span::styled("  Total:             ", Style::default()),
+            Span::styled("  ⚡ Total:             ", Style::default()),
             Span::styled(format!("{:?}", traffic.timing.total), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
         ]));
         
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("Request:", Style::default().fg(Color::Yellow)),
+            Span::styled("📤 Request:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         ]));
         lines.push(Line::from(format!("  {} {}", traffic.request.method, traffic.request.url)));
-        lines.push(Line::from(format!("  Headers: {} ({} bytes)", 
+        lines.push(Line::from(format!("  📋 Headers: {} ({} bytes)", 
             traffic.request.headers.len(),
             traffic.request.headers.iter().map(|(k, v)| k.len() + v.len() + 4).sum::<usize>()
         )));
@@ -1735,34 +2023,35 @@ fn draw_network_traffic(f: &mut Frame, area: Rect, response: &crate::http::HttpR
             lines.push(Line::from(format!("    ... and {} more", traffic.request.headers.len() - 3)));
         }
         
-        lines.push(Line::from(format!("  Body: {} bytes", traffic.request.body_size)));
+        lines.push(Line::from(format!("  📦 Body: {} bytes", traffic.request.body_size)));
         
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("Response:", Style::default().fg(Color::Yellow)),
+            Span::styled("📥 Response:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
         ]));
-        lines.push(Line::from(format!("  Status: {}", response.status)));
-        lines.push(Line::from(format!("  Headers: {} ({} bytes)", 
+        lines.push(Line::from(format!("  ✓ Status: {}", response.status)));
+        lines.push(Line::from(format!("  📋 Headers: {} ({} bytes)", 
             response.headers.len(),
             traffic.response_headers_size
         )));
-        lines.push(Line::from(format!("  Body: {} bytes", traffic.response_body_size)));
+        lines.push(Line::from(format!("  📦 Body: {} bytes", traffic.response_body_size)));
         
         lines.push(Line::from(""));
         lines.push(Line::from(vec![
-            Span::styled("Total Transfer: ", Style::default().fg(Color::Gray)),
+            Span::styled("📊 Total Transfer: ", Style::default().fg(Color::Gray)),
             Span::styled(
                 format!("{} bytes", 
                     traffic.request.body_size + traffic.response_headers_size + traffic.response_body_size
                 ),
-                Style::default().fg(Color::Cyan)
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
             ),
         ]));
         
         let paragraph = Paragraph::new(lines)
             .block(Block::default()
-                .title("Network Traffic")
+                .title("📡 Network Traffic")
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(Style::default().fg(Color::Cyan)))
             .wrap(Wrap { trim: true });
 
@@ -1818,6 +2107,7 @@ fn draw_collections_panel(f: &mut Frame, area: Rect, app: &AppState) {
         .block(Block::default()
             .title(collections_title)
             .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
             .border_style(collections_border_style))
         .highlight_style(Style::default().add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
@@ -1846,16 +2136,17 @@ fn draw_collections_panel(f: &mut Frame, area: Rect, app: &AppState) {
                     Style::default()
                 };
                 
-                let method_color = match endpoint.method {
-                    crate::models::HttpMethod::GET => Color::Green,
-                    crate::models::HttpMethod::POST => Color::Blue,
-                    crate::models::HttpMethod::PUT => Color::Yellow,
-                    crate::models::HttpMethod::DELETE => Color::Red,
-                    _ => Color::White,
+                let (method_icon, method_color) = match endpoint.method {
+                    crate::models::HttpMethod::GET => ("📥", Color::Green),
+                    crate::models::HttpMethod::POST => ("📤", Color::Blue),
+                    crate::models::HttpMethod::PUT => ("✏️", Color::Yellow),
+                    crate::models::HttpMethod::DELETE => ("🗑️", Color::Red),
+                    crate::models::HttpMethod::PATCH => ("🔧", Color::Magenta),
+                    _ => ("📨", Color::White),
                 };
                 
                 let content = Line::from(vec![
-                    Span::styled(format!("{:?} ", endpoint.method), Style::default().fg(method_color).add_modifier(Modifier::BOLD)),
+                    Span::styled(format!("{} {:?} ", method_icon, endpoint.method), Style::default().fg(method_color).add_modifier(Modifier::BOLD)),
                     Span::raw(&endpoint.name),
                 ]);
                 
@@ -1864,15 +2155,16 @@ fn draw_collections_panel(f: &mut Frame, area: Rect, app: &AppState) {
             .collect();
 
         let endpoints_title = if endpoints_focused {
-            format!("Endpoints - {} [n: new | e: edit | d: delete]", collection.name)
+            format!("🔗 Endpoints - {} [n: new | e: edit | d: delete]", collection.name)
         } else {
-            format!("Endpoints - {}", collection.name)
+            format!("🔗 Endpoints - {}", collection.name)
         };
         
         let endpoints_list = List::new(endpoint_items)
             .block(Block::default()
                 .title(endpoints_title)
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(endpoints_border_style))
             .highlight_style(Style::default().add_modifier(Modifier::BOLD))
             .highlight_symbol("→ ");
@@ -1883,7 +2175,7 @@ fn draw_collections_panel(f: &mut Frame, area: Rect, app: &AppState) {
         let text = vec![
             Line::from(""),
             Line::from(vec![
-                Span::styled("No collections", Style::default().fg(Color::DarkGray)),
+                Span::styled("📭 No collections", Style::default().fg(Color::DarkGray)),
             ]),
             Line::from(""),
             Line::from(vec![
@@ -1893,8 +2185,9 @@ fn draw_collections_panel(f: &mut Frame, area: Rect, app: &AppState) {
         
         let paragraph = Paragraph::new(text)
             .block(Block::default()
-                .title("Endpoints")
+                .title("🔗 Endpoints")
                 .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
                 .border_style(endpoints_border_style))
             .alignment(ratatui::layout::Alignment::Center);
 
