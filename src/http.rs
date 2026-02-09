@@ -75,6 +75,7 @@ pub struct HttpResponse {
 }
 
 /// HTTP client for executing API requests
+#[derive(Clone)]
 pub struct HttpClient {
     client: Client,
     default_timeout: Duration,

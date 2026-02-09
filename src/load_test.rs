@@ -4,6 +4,19 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+/// Time-series data point for charting
+#[derive(Debug, Clone)]
+pub struct TimeSeriesDataPoint {
+    pub timestamp: Instant,
+    pub elapsed_secs: u64,
+    pub rps: f64,
+    pub p50: Duration,
+    pub p90: Duration,
+    pub p95: Duration,
+    pub p99: Duration,
+    pub request_count: u64,
+}
+
 /// Metrics collected during a load test
 #[derive(Debug, Clone)]
 pub struct LoadTestMetrics {
@@ -14,6 +27,7 @@ pub struct LoadTestMetrics {
     pub latencies: Vec<Duration>,
     pub timestamps: Vec<Instant>,
     pub current_rps: f64,
+    pub time_series: Vec<TimeSeriesDataPoint>,
 }
 
 impl LoadTestMetrics {
@@ -27,6 +41,7 @@ impl LoadTestMetrics {
             latencies: Vec::new(),
             timestamps: Vec::new(),
             current_rps: 0.0,
+            time_series: Vec::new(),
         }
     }
     
@@ -64,6 +79,33 @@ impl LoadTestMetrics {
             .count();
         
         self.current_rps = recent_count as f64 / window_duration.as_secs_f64();
+    }
+    
+    /// Add a time-series data point (called every 5 seconds)
+    pub fn add_time_series_point(&mut self, start_time: Instant) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(start_time);
+        
+        // Calculate percentiles for current latencies
+        let percentiles = calculate_percentiles(&self.latencies);
+        
+        let data_point = TimeSeriesDataPoint {
+            timestamp: now,
+            elapsed_secs: elapsed.as_secs(),
+            rps: self.current_rps,
+            p50: percentiles.p50,
+            p90: percentiles.p90,
+            p95: percentiles.p95,
+            p99: percentiles.p99,
+            request_count: self.total_requests,
+        };
+        
+        self.time_series.push(data_point);
+        
+        // Keep only last 12 data points (60 seconds of history)
+        if self.time_series.len() > 12 {
+            self.time_series.remove(0);
+        }
     }
 }
 
@@ -113,6 +155,13 @@ impl MetricsCollector {
         self.metrics.lock()
             .map(|m| m.clone())
             .unwrap_or_default()
+    }
+    
+    /// Add time-series data point
+    pub fn add_time_series_point(&self, start_time: Instant) {
+        if let Ok(mut metrics) = self.metrics.lock() {
+            metrics.add_time_series_point(start_time);
+        }
     }
     
     /// Reset all metrics
@@ -295,7 +344,28 @@ impl LoadTestConfig {
             }
         }
         
+        if let Some(ramp_up) = self.ramp_up {
+            if ramp_up >= self.duration {
+                return Err("Ramp-up duration must be less than total duration".to_string());
+            }
+        }
+        
         Ok(())
+    }
+    
+    /// Calculate current concurrency based on ramp-up
+    pub fn current_concurrency(&self, elapsed: Duration) -> usize {
+        if let Some(ramp_up) = self.ramp_up {
+            if elapsed < ramp_up {
+                // Linear ramp-up
+                let progress = elapsed.as_secs_f64() / ramp_up.as_secs_f64();
+                ((self.concurrency as f64 * progress).ceil() as usize).max(1)
+            } else {
+                self.concurrency
+            }
+        } else {
+            self.concurrency
+        }
     }
 }
 
@@ -304,7 +374,7 @@ pub struct LoadTestEngine {
     collector: MetricsCollector,
     #[allow(dead_code)]
     config: LoadTestConfig,
-    start_time: Option<Instant>,
+    start_time: Arc<Mutex<Option<Instant>>>,
     is_running: Arc<Mutex<bool>>,
 }
 
@@ -315,7 +385,7 @@ impl LoadTestEngine {
         Ok(Self {
             collector: MetricsCollector::new(),
             config,
-            start_time: None,
+            start_time: Arc::new(Mutex::new(None)),
             is_running: Arc::new(Mutex::new(false)),
         })
     }
@@ -332,7 +402,9 @@ impl LoadTestEngine {
     
     /// Get elapsed time
     pub fn elapsed(&self) -> Duration {
-        self.start_time.map(|t| t.elapsed()).unwrap_or_default()
+        self.start_time.lock().unwrap()
+            .map(|t| t.elapsed())
+            .unwrap_or_default()
     }
     
     /// Stop the load test
@@ -347,6 +419,30 @@ impl LoadTestEngine {
         let metrics = self.collector.snapshot();
         let duration = self.elapsed();
         LoadTestStatistics::from_metrics(&metrics, duration)
+    }
+    
+    /// Set start time
+    pub fn set_start_time(&self, time: Instant) {
+        if let Ok(mut start) = self.start_time.lock() {
+            *start = Some(time);
+        }
+    }
+    
+    /// Set running flag
+    pub fn set_running(&self, running: bool) {
+        if let Ok(mut is_running) = self.is_running.lock() {
+            *is_running = running;
+        }
+    }
+    
+    /// Get the collector for recording metrics
+    pub fn collector(&self) -> MetricsCollector {
+        self.collector.clone()
+    }
+    
+    /// Get the configuration
+    pub fn config(&self) -> &LoadTestConfig {
+        &self.config
     }
 }
 

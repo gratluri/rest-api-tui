@@ -61,6 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         headers: HashMap::new(),
         body_template: None,
         auth: None,
+        load_test_config: None,
     };
     
     let inputs = RequestInputs {

@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, BarChart, Gauge},
+    widgets::{Block, Borders, List, ListItem, Paragraph, Wrap, BarChart, Gauge, Sparkline},
     Frame, Terminal,
 };
 use crossterm::{
@@ -283,6 +283,10 @@ fn run_app_loop<B: Backend>(
                                     app.save_endpoint();
                                 }
                             }
+                            Screen::LoadTestConfig(_, _) => {
+                                // Start load test with configured parameters
+                                app.execute_load_test();
+                            }
                             Screen::CollectionList => {
                                 // In new layout, Enter selects endpoint to view
                                 if app.panel_focus == crate::tui_app::PanelFocus::Endpoints {
@@ -305,6 +309,22 @@ fn run_app_loop<B: Backend>(
                         }
                     }
                     KeyCode::Char(c) => {
+                        // Check if in LoadTestConfig screen - handle numeric input
+                        if matches!(app.current_screen, Screen::LoadTestConfig(_, _)) {
+                            if let Some(form) = &mut app.load_test_config_form {
+                                // Only allow digits for numeric fields
+                                if c.is_ascii_digit() {
+                                    match form.current_field {
+                                        0 => form.concurrency.push(c),
+                                        1 => form.duration.push(c),
+                                        2 => form.ramp_up.push(c),
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        
                         // Check if in header edit mode
                         if matches!(app.current_screen, Screen::EndpointEdit(_, _)) {
                             if let Some(form) = &app.endpoint_form {
@@ -460,6 +480,16 @@ fn run_app_loop<B: Backend>(
                     KeyCode::Backspace => {
                         // Delete character in forms
                         match &app.current_screen {
+                            Screen::LoadTestConfig(_, _) => {
+                                if let Some(form) = &mut app.load_test_config_form {
+                                    match form.current_field {
+                                        0 => { form.concurrency.pop(); }
+                                        1 => { form.duration.pop(); }
+                                        2 => { form.ramp_up.pop(); }
+                                        _ => {}
+                                    }
+                                }
+                            }
                             Screen::CollectionEdit(_) => {
                                 if let Some(form) = &mut app.collection_form {
                                     form.name.pop();
@@ -501,6 +531,10 @@ fn run_app_loop<B: Backend>(
                                     form.current_field = (form.current_field + 1) % 6;
                                 }
                             }
+                        } else if let Screen::LoadTestConfig(_, _) = app.current_screen {
+                            if let Some(form) = &mut app.load_test_config_form {
+                                form.current_field = (form.current_field + 1) % 3;
+                            }
                         }
                     }
                     KeyCode::BackTab => {
@@ -518,6 +552,14 @@ fn run_app_loop<B: Backend>(
                                         form.current_field - 1
                                     };
                                 }
+                            }
+                        } else if let Screen::LoadTestConfig(_, _) = app.current_screen {
+                            if let Some(form) = &mut app.load_test_config_form {
+                                form.current_field = if form.current_field == 0 {
+                                    2
+                                } else {
+                                    form.current_field - 1
+                                };
                             }
                         }
                     }
@@ -575,7 +617,7 @@ fn draw_ui(f: &mut Frame, app: &AppState) {
         match &app.current_screen {
             Screen::CollectionEdit(_) => draw_collection_edit(f, chunks[1], app),
             Screen::EndpointEdit(coll_idx, _) => draw_endpoint_edit(f, chunks[1], app, *coll_idx),
-            Screen::LoadTestConfig(_, _) => draw_help(f, chunks[1]),
+            Screen::LoadTestConfig(_, _) => draw_load_test_config(f, chunks[1], app),
             Screen::LoadTestRunning(coll_idx, ep_idx) => draw_load_test(f, chunks[1], app, *coll_idx, *ep_idx),
             Screen::ConfirmDelete(_) => draw_confirm_delete(f, chunks[1], app),
             Screen::Help => draw_help(f, chunks[1]),
@@ -807,7 +849,7 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(3),
-                Constraint::Length(8),
+                Constraint::Length(24),  // Increased from 12 to fit charts
                 Constraint::Min(0),
             ])
             .split(area);
@@ -827,8 +869,17 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
             .percent(progress);
         f.render_widget(gauge, chunks[0]);
 
-        // Stats
-        let stats_text = vec![
+        // Calculate percentiles
+        let percentiles = crate::load_test::calculate_percentiles(&metrics.latencies);
+        let avg_latency = if !metrics.latencies.is_empty() {
+            let total: std::time::Duration = metrics.latencies.iter().sum();
+            total / metrics.latencies.len() as u32
+        } else {
+            std::time::Duration::default()
+        };
+
+        // Stats with percentiles and charts
+        let mut stats_text = vec![
             Line::from(vec![
                 Span::styled("Total Requests: ", Style::default().fg(Color::Gray)),
                 Span::styled(format!("{}", metrics.total_requests), Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
@@ -844,11 +895,186 @@ fn draw_load_test(f: &mut Frame, area: Rect, app: &AppState, _coll_idx: usize, _
                 Span::styled("Current RPS: ", Style::default().fg(Color::Gray)),
                 Span::styled(format!("{:.2}", metrics.current_rps), Style::default().fg(Color::Yellow)),
             ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Latency Percentiles:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Avg: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:?}", avg_latency), Style::default().fg(Color::White)),
+                Span::raw("  "),
+                Span::styled("p50: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:?}", percentiles.p50), Style::default().fg(Color::Green)),
+            ]),
+            Line::from(vec![
+                Span::styled("  p90: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:?}", percentiles.p90), Style::default().fg(Color::Yellow)),
+                Span::raw("  "),
+                Span::styled("p95: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:?}", percentiles.p95), Style::default().fg(Color::Magenta)),
+            ]),
+            Line::from(vec![
+                Span::styled("  p99: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:?}", percentiles.p99), Style::default().fg(Color::Red)),
+                Span::raw("  "),
+                Span::styled("Max: ", Style::default().fg(Color::Gray)),
+                Span::styled(format!("{:?}", percentiles.max), Style::default().fg(Color::Red)),
+            ]),
         ];
 
+        // Add time-series charts if we have data
+        if !metrics.time_series.is_empty() {
+            stats_text.push(Line::from(""));
+            stats_text.push(Line::from(vec![
+                Span::styled("p95 Latency Trend (5s intervals):", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ]));
+            
+            // Prepare p95 latency data for sparkline
+            let p95_data: Vec<u64> = metrics.time_series.iter()
+                .map(|dp| dp.p95.as_millis() as u64)
+                .collect();
+            
+            if !p95_data.is_empty() {
+                let max_p95 = *p95_data.iter().max().unwrap_or(&1);
+                let min_p95 = *p95_data.iter().min().unwrap_or(&0);
+                
+                stats_text.push(Line::from(vec![
+                    Span::styled(format!("  {}ms - {}ms", min_p95, max_p95), Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+            
+            stats_text.push(Line::from(""));
+            stats_text.push(Line::from(vec![
+                Span::styled("RPS Trend (5s intervals):", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ]));
+            
+            // Prepare RPS data for sparkline
+            let rps_data: Vec<u64> = metrics.time_series.iter()
+                .map(|dp| dp.rps as u64)
+                .collect();
+            
+            if !rps_data.is_empty() {
+                let max_rps = *rps_data.iter().max().unwrap_or(&1);
+                let min_rps = *rps_data.iter().min().unwrap_or(&0);
+                
+                stats_text.push(Line::from(vec![
+                    Span::styled(format!("  {} - {} req/s", min_rps, max_rps), Style::default().fg(Color::DarkGray)),
+                ]));
+            }
+        }
+
+        // Split stats area to show text and sparklines side by side
+        let stats_chunks = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(50),  // Text stats
+                Constraint::Percentage(50),  // Sparklines
+            ])
+            .split(chunks[1]);
+
+        // Draw text stats on the left
         let stats_paragraph = Paragraph::new(stats_text)
             .block(Block::default().title("Statistics").borders(Borders::ALL));
-        f.render_widget(stats_paragraph, chunks[1]);
+        f.render_widget(stats_paragraph, stats_chunks[0]);
+
+        // Draw sparklines on the right
+        if !metrics.time_series.is_empty() {
+            let sparkline_chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(7),   // p95 latency chart
+                    Constraint::Length(7),   // RPS chart
+                    Constraint::Min(0),      // Spacer
+                ])
+                .split(stats_chunks[1]);
+
+            // p95 Latency Sparkline with Y-axis labels
+            let p95_data: Vec<u64> = metrics.time_series.iter()
+                .map(|dp| dp.p95.as_millis() as u64)
+                .collect();
+            
+            if !p95_data.is_empty() {
+                let max_p95 = *p95_data.iter().max().unwrap_or(&1);
+                let min_p95 = *p95_data.iter().min().unwrap_or(&0);
+                
+                // Split area for Y-axis labels and sparkline
+                let p95_layout = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Length(6),   // Y-axis labels
+                        Constraint::Min(0),      // Sparkline
+                    ])
+                    .split(sparkline_chunks[0]);
+                
+                // Draw Y-axis labels
+                let y_labels = vec![
+                    Line::from(""),
+                    Line::from(format!("{}ms", max_p95)),
+                    Line::from(""),
+                    Line::from(format!("{}ms", (max_p95 + min_p95) / 2)),
+                    Line::from(""),
+                    Line::from(format!("{}ms", min_p95)),
+                ];
+                let y_axis = Paragraph::new(y_labels)
+                    .style(Style::default().fg(Color::DarkGray))
+                    .alignment(ratatui::layout::Alignment::Right);
+                f.render_widget(y_axis, p95_layout[0]);
+                
+                // Determine color based on latency
+                let sparkline_style = if max_p95 < 100 {
+                    Style::default().fg(Color::Green)
+                } else if max_p95 < 200 {
+                    Style::default().fg(Color::Yellow)
+                } else {
+                    Style::default().fg(Color::Red)
+                };
+                
+                let p95_sparkline = Sparkline::default()
+                    .block(Block::default().title("p95 Latency").borders(Borders::ALL))
+                    .data(&p95_data)
+                    .style(sparkline_style);
+                f.render_widget(p95_sparkline, p95_layout[1]);
+            }
+
+            // RPS Sparkline with Y-axis labels
+            let rps_data: Vec<u64> = metrics.time_series.iter()
+                .map(|dp| dp.rps as u64)
+                .collect();
+            
+            if !rps_data.is_empty() {
+                let max_rps = *rps_data.iter().max().unwrap_or(&1);
+                let min_rps = *rps_data.iter().min().unwrap_or(&0);
+                
+                // Split area for Y-axis labels and sparkline
+                let rps_layout = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([
+                        Constraint::Length(6),   // Y-axis labels
+                        Constraint::Min(0),      // Sparkline
+                    ])
+                    .split(sparkline_chunks[1]);
+                
+                // Draw Y-axis labels
+                let y_labels = vec![
+                    Line::from(""),
+                    Line::from(format!("{}", max_rps)),
+                    Line::from(""),
+                    Line::from(format!("{}", (max_rps + min_rps) / 2)),
+                    Line::from(""),
+                    Line::from(format!("{}", min_rps)),
+                ];
+                let y_axis = Paragraph::new(y_labels)
+                    .style(Style::default().fg(Color::DarkGray))
+                    .alignment(ratatui::layout::Alignment::Right);
+                f.render_widget(y_axis, rps_layout[0]);
+                
+                let rps_sparkline = Sparkline::default()
+                    .block(Block::default().title("RPS").borders(Borders::ALL))
+                    .data(&rps_data)
+                    .style(Style::default().fg(Color::Cyan));
+                f.render_widget(rps_sparkline, rps_layout[1]);
+            }
+        }
 
         // Chart
         let data = vec![
@@ -1094,6 +1320,101 @@ fn draw_help(f: &mut Frame, area: Rect) {
         .wrap(Wrap { trim: true });
 
     f.render_widget(paragraph, area);
+}
+
+fn draw_load_test_config(f: &mut Frame, area: Rect, app: &AppState) {
+    if let Some(form) = &app.load_test_config_form {
+        let title = "Load Test Configuration [Tab: next field | Enter: start | Esc: cancel]";
+        
+        let concurrency_style = if form.current_field == 0 {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        
+        let duration_style = if form.current_field == 1 {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        
+        let ramp_up_style = if form.current_field == 2 {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        
+        let cursor = if form.current_field == 0 && !form.concurrency.is_empty() 
+            || form.current_field == 1 && !form.duration.is_empty()
+            || form.current_field == 2 && !form.ramp_up.is_empty() {
+            ""
+        } else {
+            "_"
+        };
+        
+        let mut text = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Configure load test parameters:", Style::default().fg(Color::Cyan)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Concurrency (workers): ", Style::default().fg(Color::Gray)),
+                Span::styled(&form.concurrency, concurrency_style),
+                Span::styled(if form.current_field == 0 { cursor } else { "" }, concurrency_style.add_modifier(Modifier::SLOW_BLINK)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Number of concurrent workers (1-1000)", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Duration (seconds): ", Style::default().fg(Color::Gray)),
+                Span::styled(&form.duration, duration_style),
+                Span::styled(if form.current_field == 1 { cursor } else { "" }, duration_style.add_modifier(Modifier::SLOW_BLINK)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Total test duration (1-3600)", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Ramp-up (seconds): ", Style::default().fg(Color::Gray)),
+                Span::styled(if form.ramp_up.is_empty() { "(optional)" } else { &form.ramp_up }, ramp_up_style),
+                Span::styled(if form.current_field == 2 { cursor } else { "" }, ramp_up_style.add_modifier(Modifier::SLOW_BLINK)),
+            ]),
+            Line::from(vec![
+                Span::styled("  Gradually increase load over this period", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(""),
+        ];
+        
+        // Show preview
+        let concurrency_val = form.concurrency.parse::<usize>().unwrap_or(10);
+        let duration_val = form.duration.parse::<u64>().unwrap_or(30);
+        let ramp_up_val = if form.ramp_up.is_empty() {
+            None
+        } else {
+            form.ramp_up.parse::<u64>().ok()
+        };
+        
+        text.push(Line::from(vec![
+            Span::styled("Preview:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]));
+        text.push(Line::from(format!("  {} workers will execute requests for {} seconds", concurrency_val, duration_val)));
+        
+        if let Some(ramp_up) = ramp_up_val {
+            text.push(Line::from(format!("  Load will ramp up over {} seconds", ramp_up)));
+            text.push(Line::from(format!("  Expected total requests: ~{}", concurrency_val * (duration_val - ramp_up / 2) as usize)));
+        } else {
+            text.push(Line::from(format!("  Expected total requests: ~{}", concurrency_val * duration_val as usize)));
+        }
+        
+        let paragraph = Paragraph::new(text)
+            .block(Block::default().title(title).borders(Borders::ALL))
+            .wrap(Wrap { trim: true });
+        
+        f.render_widget(paragraph, area);
+    }
 }
 
 

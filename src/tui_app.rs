@@ -5,6 +5,7 @@ use crate::storage::StorageManager;
 use crate::http::{HttpClient, RequestInputs, HttpResponse};
 use crate::formatter;
 use crate::load_test::{LoadTestEngine, LoadTestConfig, LoadTestMetrics};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::collections::HashMap;
 
@@ -51,6 +52,16 @@ pub struct EndpointForm {
     pub header_edit_field: usize, // 0=key, 1=value
 }
 
+#[derive(Debug, Clone)]
+pub struct LoadTestConfigForm {
+    pub concurrency: String,
+    pub duration: String,
+    pub ramp_up: String,
+    pub current_field: usize, // 0=concurrency, 1=duration, 2=ramp_up
+    pub collection_index: usize,
+    pub endpoint_index: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PanelFocus {
     Collections,
@@ -77,6 +88,7 @@ pub struct AppState {
     pub status_message: Option<String>,
     pub collection_form: Option<CollectionForm>,
     pub endpoint_form: Option<EndpointForm>,
+    pub load_test_config_form: Option<LoadTestConfigForm>,
 }
 
 impl AppState {
@@ -105,6 +117,7 @@ impl AppState {
             status_message: None,
             collection_form: None,
             endpoint_form: None,
+            load_test_config_form: None,
         })
     }
     
@@ -189,7 +202,10 @@ impl AppState {
             }
             Screen::EndpointDetail(coll_idx, _) => Screen::EndpointList(*coll_idx),
             Screen::ResponseView(coll_idx, _) => Screen::EndpointList(*coll_idx),
-            Screen::LoadTestConfig(coll_idx, _) => Screen::EndpointList(*coll_idx),
+            Screen::LoadTestConfig(_, _) => {
+                self.load_test_config_form = None;
+                Screen::CollectionList
+            }
             Screen::LoadTestRunning(coll_idx, _) => Screen::EndpointList(*coll_idx),
             Screen::ConfirmDelete(_) => {
                 // Go back to previous screen
@@ -262,15 +278,185 @@ impl AppState {
     }
     
     pub fn start_load_test(&mut self, coll_idx: usize, ep_idx: usize) {
-        match LoadTestEngine::new(self.load_test_config.clone()) {
-            Ok(engine) => {
-                self.load_test_engine = Some(engine);
-                self.current_screen = Screen::LoadTestRunning(coll_idx, ep_idx);
-                self.status_message = Some("Load test started".to_string());
-                self.error_message = None;
+        // Show configuration form first
+        if let Some(collection) = self.collections.get(coll_idx) {
+            if let Some(endpoint) = collection.endpoints.get(ep_idx) {
+                // Load existing config or use defaults
+                let (concurrency, duration, ramp_up) = if let Some(config) = &endpoint.load_test_config {
+                    (
+                        config.concurrency.to_string(),
+                        config.duration_secs.to_string(),
+                        config.ramp_up_secs.map(|s| s.to_string()).unwrap_or_default(),
+                    )
+                } else {
+                    ("10".to_string(), "30".to_string(), String::new())
+                };
+                
+                self.load_test_config_form = Some(LoadTestConfigForm {
+                    concurrency,
+                    duration,
+                    ramp_up,
+                    current_field: 0,
+                    collection_index: coll_idx,
+                    endpoint_index: ep_idx,
+                });
+                
+                self.current_screen = Screen::LoadTestConfig(coll_idx, ep_idx);
             }
-            Err(e) => {
-                self.error_message = Some(format!("Failed to start load test: {}", e));
+        }
+    }
+    
+    pub fn execute_load_test(&mut self) {
+        if let Some(form) = &self.load_test_config_form {
+            let coll_idx = form.collection_index;
+            let ep_idx = form.endpoint_index;
+            
+            // Parse configuration
+            let concurrency = form.concurrency.parse::<usize>().unwrap_or(10);
+            let duration_secs = form.duration.parse::<u64>().unwrap_or(30);
+            let ramp_up_secs = if form.ramp_up.is_empty() {
+                None
+            } else {
+                form.ramp_up.parse::<u64>().ok()
+            };
+            
+            // Create config
+            let mut config = LoadTestConfig::new(concurrency, Duration::from_secs(duration_secs));
+            if let Some(ramp_up) = ramp_up_secs {
+                config = config.with_ramp_up(Duration::from_secs(ramp_up));
+            }
+            
+            // Validate
+            if let Err(e) = config.validate() {
+                self.error_message = Some(e);
+                return;
+            }
+            
+            // Save config to endpoint
+            if let Some(collection) = self.collections.get_mut(coll_idx) {
+                if let Some(endpoint) = collection.endpoints.get_mut(ep_idx) {
+                    endpoint.load_test_config = Some(crate::models::LoadTestConfigData {
+                        concurrency,
+                        duration_secs,
+                        ramp_up_secs,
+                        rate_limit: None,
+                    });
+                    let _ = self.storage.save_collection(collection);
+                }
+            }
+            
+            // Clear form
+            self.load_test_config_form = None;
+            
+            // Start the actual load test
+            self.execute_load_test_with_config(coll_idx, ep_idx, config);
+        }
+    }
+    
+    fn execute_load_test_with_config(&mut self, coll_idx: usize, ep_idx: usize, config: LoadTestConfig) {
+        if let Some(collection) = self.collections.get(coll_idx) {
+            if let Some(endpoint) = collection.endpoints.get(ep_idx) {
+                let endpoint = endpoint.clone();
+                let http_client = self.http_client.clone();
+                
+                match LoadTestEngine::new(config.clone()) {
+                    Ok(engine) => {
+                        let collector = engine.collector();
+                        let is_running = Arc::new(Mutex::new(true));
+                        let is_running_clone = is_running.clone();
+                        
+                        // Set engine state
+                        engine.set_start_time(std::time::Instant::now());
+                        engine.set_running(true);
+                        
+                        // Store engine before spawning thread
+                        self.load_test_engine = Some(engine);
+                        self.current_screen = Screen::LoadTestRunning(coll_idx, ep_idx);
+                        self.status_message = Some("Load test started...".to_string());
+                        self.error_message = None;
+                        
+                        // Spawn background thread for load test execution
+                        std::thread::spawn(move || {
+                            let runtime = tokio::runtime::Runtime::new().unwrap();
+                            runtime.block_on(async {
+                                let start = std::time::Instant::now();
+                                let mut handles = vec![];
+                                
+                                // Spawn concurrent tasks based on ramp-up
+                                for worker_id in 0..config.concurrency {
+                                    let endpoint = endpoint.clone();
+                                    let http_client = http_client.clone();
+                                    let collector = collector.clone();
+                                    let is_running = is_running_clone.clone();
+                                    let duration = config.duration;
+                                    let ramp_up = config.ramp_up;
+                                    
+                                    let handle = tokio::spawn(async move {
+                                        // Calculate delay for this worker based on ramp-up
+                                        if let Some(ramp_up_duration) = ramp_up {
+                                            let worker_delay = ramp_up_duration.as_secs_f64() 
+                                                * (worker_id as f64 / config.concurrency as f64);
+                                            tokio::time::sleep(tokio::time::Duration::from_secs_f64(worker_delay)).await;
+                                        }
+                                        
+                                        while start.elapsed() < duration && *is_running.lock().unwrap() {
+                                            let req_start = std::time::Instant::now();
+                                            let inputs = RequestInputs::default();
+                                            
+                                            match http_client.execute(&endpoint, &inputs).await {
+                                                Ok(response) => {
+                                                    collector.record_success(response.duration);
+                                                }
+                                                Err(e) => {
+                                                    collector.record_failure(
+                                                        e.to_string(),
+                                                        req_start.elapsed()
+                                                    );
+                                                }
+                                            }
+                                            
+                                            // Small delay to prevent overwhelming the server
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+                                        }
+                                    });
+                                    
+                                    handles.push(handle);
+                                }
+                                
+                                // Periodically update RPS
+                                let collector_for_rps = collector.clone();
+                                let is_running_for_rps = is_running_clone.clone();
+                                tokio::spawn(async move {
+                                    while *is_running_for_rps.lock().unwrap() {
+                                        collector_for_rps.update_rps(Duration::from_secs(1));
+                                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                    }
+                                });
+                                
+                                // Periodically collect time-series data (every 5 seconds)
+                                let collector_for_timeseries = collector.clone();
+                                let is_running_for_timeseries = is_running_clone.clone();
+                                tokio::spawn(async move {
+                                    while *is_running_for_timeseries.lock().unwrap() {
+                                        collector_for_timeseries.add_time_series_point(start);
+                                        tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                                    }
+                                });
+                                
+                                // Wait for all tasks to complete
+                                for handle in handles {
+                                    let _ = handle.await;
+                                }
+                                
+                                // Mark as stopped
+                                *is_running_clone.lock().unwrap() = false;
+                            });
+                        });
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Failed to start load test: {}", e));
+                    }
+                }
             }
         }
     }
@@ -446,6 +632,11 @@ impl AppState {
                     headers: form.headers.clone(),
                     body_template: if form.body_template.is_empty() { None } else { Some(form.body_template.clone()) },
                     auth: None,
+                    load_test_config: if let Some(idx) = form.editing_index {
+                        collection.endpoints.get(idx).and_then(|e| e.load_test_config.clone())
+                    } else {
+                        None
+                    },
                 };
                 
                 match form.editing_index {

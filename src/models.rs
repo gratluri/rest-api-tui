@@ -51,6 +51,16 @@ pub struct ApiEndpoint {
     pub body_template: Option<String>,
     pub auth: Option<AuthConfig>,
     pub description: Option<String>,
+    pub load_test_config: Option<LoadTestConfigData>,
+}
+
+/// Load test configuration data (serializable)
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LoadTestConfigData {
+    pub concurrency: usize,
+    pub duration_secs: u64,
+    pub ramp_up_secs: Option<u64>,
+    pub rate_limit: Option<usize>,
 }
 
 /// A collection of related API endpoints
@@ -106,6 +116,7 @@ impl ApiEndpoint {
             body_template: None,
             auth: None,
             description: None,
+            load_test_config: None,
         }
     }
 }
