@@ -1773,14 +1773,17 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
         
         // Check if response is JSON
         let is_json = response.headers.iter()
-            .any(|(k, v)| k.to_lowercase() == "content-type" && v.contains("application/json"));
+            .any(|(k, v)| k.to_lowercase() == "content-type" && v.to_lowercase().contains("json"));
+        
+        let json_indicator = if is_json { " 🎨 JSON" } else { "" };
         
         let header_text = format!(
-            "{} Response: {} - {:?} - {} bytes  [t: {} traffic | PgUp/PgDn: scroll]",
+            "{} Response: {} - {:?} - {} bytes{} [t: {} traffic | PgUp/PgDn: scroll]",
             status_icon,
             response.status,
             response.duration,
             response.body.len(),
+            json_indicator,
             traffic_toggle
         );
         
