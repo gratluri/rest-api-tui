@@ -5,9 +5,11 @@ use crate::storage::StorageManager;
 use crate::http::{HttpClient, RequestInputs, HttpResponse};
 use crate::formatter;
 use crate::load_test::{LoadTestEngine, LoadTestConfig, LoadTestMetrics};
+use crate::variables::VariableManager;
+use crate::template;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
@@ -19,6 +21,9 @@ pub enum Screen {
     ResponseView(usize, usize), // collection index, endpoint index
     LoadTestConfig(usize, usize), // collection index, endpoint index
     LoadTestRunning(usize, usize), // collection index, endpoint index
+    VariableList, // Variable management screen
+    VariableEdit(Option<String>), // None for new, Some(key) for edit
+    VariableInput(usize, usize), // Prompt for variables before request (collection index, endpoint index)
     ConfirmDelete(DeleteTarget), // confirmation dialog
     Help,
 }
@@ -27,6 +32,7 @@ pub enum Screen {
 pub enum DeleteTarget {
     Collection(usize),
     Endpoint(usize, usize), // collection index, endpoint index
+    Variable(String), // variable key
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +69,23 @@ pub struct LoadTestConfigForm {
     pub endpoint_index: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct VariableForm {
+    pub key: String,
+    pub value: String,
+    pub editing_key: Option<String>, // None for new, Some(key) for edit
+    pub current_field: usize, // 0=key, 1=value
+}
+
+#[derive(Debug, Clone)]
+pub struct VariableInputForm {
+    pub variables: HashMap<String, String>, // Variable values being input
+    pub required_vars: Vec<String>, // List of required variables
+    pub current_index: usize, // Current variable being edited
+    pub collection_index: usize,
+    pub endpoint_index: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PanelFocus {
     Collections,
@@ -79,9 +102,12 @@ pub struct AppState {
     pub panel_focus: PanelFocus,
     pub show_network_traffic: bool, // Toggle for network traffic display
     pub show_response_headers: bool, // Toggle for response headers display
+    pub collapsed_sections: HashSet<String>, // Track collapsed sections
     pub response_scroll_offset: usize, // Vertical scroll offset for response panel
+    pub headers_scroll_offset: usize, // Vertical scroll offset for headers panel
     pub storage: StorageManager,
     pub http_client: HttpClient,
+    pub variable_manager: VariableManager,
     pub last_response: Option<HttpResponse>,
     pub last_response_formatted: Option<String>,
     pub load_test_engine: Option<LoadTestEngine>,
@@ -91,6 +117,8 @@ pub struct AppState {
     pub collection_form: Option<CollectionForm>,
     pub endpoint_form: Option<EndpointForm>,
     pub load_test_config_form: Option<LoadTestConfigForm>,
+    pub variable_form: Option<VariableForm>,
+    pub variable_input_form: Option<VariableInputForm>,
 }
 
 impl AppState {
@@ -98,6 +126,7 @@ impl AppState {
         let storage = StorageManager::with_defaults()?;
         let collections = storage.load_collections()?;
         let http_client = HttpClient::new()?;
+        let variable_manager = VariableManager::new()?;
         
         Ok(Self {
             collections,
@@ -109,9 +138,12 @@ impl AppState {
             panel_focus: PanelFocus::Collections,
             show_network_traffic: false, // Disabled by default
             show_response_headers: false, // Disabled by default
+            collapsed_sections: HashSet::new(), // No sections collapsed by default
             response_scroll_offset: 0,
+            headers_scroll_offset: 0,
             storage,
             http_client,
+            variable_manager,
             last_response: None,
             last_response_formatted: None,
             load_test_engine: None,
@@ -121,6 +153,8 @@ impl AppState {
             collection_form: None,
             endpoint_form: None,
             load_test_config_form: None,
+            variable_form: None,
+            variable_input_form: None,
         })
     }
     
@@ -130,6 +164,18 @@ impl AppState {
     
     pub fn toggle_response_headers(&mut self) {
         self.show_response_headers = !self.show_response_headers;
+    }
+    
+    pub fn toggle_section_collapsed(&mut self, section: &str) {
+        if self.collapsed_sections.contains(section) {
+            self.collapsed_sections.remove(section);
+        } else {
+            self.collapsed_sections.insert(section.to_string());
+        }
+    }
+    
+    pub fn is_section_collapsed(&self, section: &str) -> bool {
+        self.collapsed_sections.contains(section)
     }
     
     pub fn scroll_response_up(&mut self, lines: usize) {
@@ -147,6 +193,18 @@ impl AppState {
     pub fn scroll_response_to_end(&mut self) {
         // Set to a very large number, will be clamped in draw function
         self.response_scroll_offset = usize::MAX;
+    }
+    
+    pub fn scroll_headers_up(&mut self, lines: usize) {
+        self.headers_scroll_offset = self.headers_scroll_offset.saturating_sub(lines);
+    }
+    
+    pub fn scroll_headers_down(&mut self, lines: usize) {
+        self.headers_scroll_offset = self.headers_scroll_offset.saturating_add(lines);
+    }
+    
+    pub fn reset_headers_scroll(&mut self) {
+        self.headers_scroll_offset = 0;
     }
     
     pub fn navigate_up(&mut self) {
@@ -214,6 +272,15 @@ impl AppState {
                 Screen::CollectionList
             }
             Screen::LoadTestRunning(coll_idx, _) => Screen::EndpointList(*coll_idx),
+            Screen::VariableList => Screen::CollectionList,
+            Screen::VariableEdit(_) => {
+                self.variable_form = None;
+                Screen::VariableList
+            }
+            Screen::VariableInput(coll_idx, ep_idx) => {
+                self.variable_input_form = None;
+                Screen::EndpointDetail(*coll_idx, *ep_idx)
+            }
             Screen::ConfirmDelete(_) => {
                 // Go back to previous screen
                 self.previous_screen.clone().unwrap_or(Screen::CollectionList)
@@ -271,6 +338,7 @@ impl AppState {
                         self.last_response = Some(response);
                         self.last_response_formatted = Some(formatted);
                         self.response_scroll_offset = 0; // Reset scroll on new response
+                        self.headers_scroll_offset = 0; // Reset headers scroll on new response
                         // Stay on the same screen in new layout
                         self.status_message = Some("Request completed successfully".to_string());
                         self.error_message = None;
@@ -745,6 +813,11 @@ impl AppState {
                             })
                         })
                     }
+                    DeleteTarget::Variable(key) => {
+                        self.variable_manager.get(key).map(|value| {
+                            format!("Delete variable '{}'?\n\nValue: {}", key, value)
+                        })
+                    }
                 }
             }
             _ => None
@@ -759,6 +832,9 @@ impl AppState {
                 }
                 DeleteTarget::Endpoint(coll_idx, ep_idx) => {
                     self.delete_endpoint(*coll_idx, *ep_idx);
+                }
+                DeleteTarget::Variable(key) => {
+                    self.delete_variable(key);
                 }
             }
         }
@@ -803,6 +879,319 @@ impl AppState {
         if let Some(form) = &mut self.endpoint_form {
             if form.header_edit_mode {
                 form.header_edit_field = (form.header_edit_field + 1) % 2;
+            }
+        }
+    }
+    
+    // Clipboard operations
+    
+    pub fn copy_response_to_clipboard(&mut self) {
+        if let Some(formatted) = &self.last_response_formatted {
+            match arboard::Clipboard::new() {
+                Ok(mut clipboard) => {
+                    match clipboard.set_text(formatted.clone()) {
+                        Ok(_) => {
+                            self.status_message = Some("Response copied to clipboard".to_string());
+                            self.error_message = None;
+                        }
+                        Err(e) => {
+                            self.error_message = Some(format!("Failed to copy to clipboard: {}", e));
+                            self.status_message = None;
+                        }
+                    }
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to access clipboard: {}", e));
+                    self.status_message = None;
+                }
+            }
+        } else {
+            self.error_message = Some("No response to copy".to_string());
+            self.status_message = None;
+        }
+    }
+    
+    // Variable Management
+    
+    pub fn start_new_variable(&mut self) {
+        self.variable_form = Some(VariableForm {
+            key: String::new(),
+            value: String::new(),
+            editing_key: None,
+            current_field: 0,
+        });
+        self.current_screen = Screen::VariableEdit(None);
+    }
+    
+    pub fn start_edit_variable(&mut self, key: String) {
+        if let Some(value) = self.variable_manager.get(&key) {
+            self.variable_form = Some(VariableForm {
+                key: key.clone(),
+                value: value.clone(),
+                editing_key: Some(key.clone()),
+                current_field: 0,
+            });
+            self.current_screen = Screen::VariableEdit(Some(key));
+        }
+    }
+    
+    pub fn save_variable(&mut self) {
+        if let Some(form) = &self.variable_form {
+            if form.key.trim().is_empty() {
+                self.error_message = Some("Variable key cannot be empty".to_string());
+                return;
+            }
+            
+            // If editing, remove old key if it changed
+            if let Some(old_key) = &form.editing_key {
+                if old_key != &form.key {
+                    let _ = self.variable_manager.remove(old_key);
+                }
+            }
+            
+            // Set new/updated variable
+            match self.variable_manager.set(form.key.clone(), form.value.clone()) {
+                Ok(_) => {
+                    self.status_message = Some("Variable saved successfully".to_string());
+                    self.error_message = None;
+                    self.current_screen = Screen::VariableList;
+                    self.variable_form = None;
+                }
+                Err(e) => {
+                    self.error_message = Some(format!("Failed to save variable: {}", e));
+                }
+            }
+        }
+    }
+    
+    pub fn confirm_delete_variable(&mut self, key: String) {
+        self.previous_screen = Some(self.current_screen.clone());
+        self.current_screen = Screen::ConfirmDelete(DeleteTarget::Variable(key));
+    }
+    
+    pub fn delete_variable(&mut self, key: &str) {
+        match self.variable_manager.remove(key) {
+            Ok(_) => {
+                self.status_message = Some("Variable deleted successfully".to_string());
+                self.error_message = None;
+                self.current_screen = Screen::VariableList;
+            }
+            Err(e) => {
+                self.error_message = Some(format!("Failed to delete variable: {}", e));
+                self.navigate_back();
+            }
+        }
+    }
+    
+    // Variable Input for Request Execution
+    
+    pub fn start_variable_input(&mut self, coll_idx: usize, ep_idx: usize) {
+        if let Some(collection) = self.collections.get(coll_idx) {
+            if let Some(endpoint) = collection.endpoints.get(ep_idx) {
+                // Find all variables needed for this endpoint
+                let mut required_vars = HashSet::new();
+                
+                // Check URL
+                for var in template::find_variables(&endpoint.url) {
+                    required_vars.insert(var);
+                }
+                
+                // Check headers
+                for value in endpoint.headers.values() {
+                    for var in template::find_variables(value) {
+                        required_vars.insert(var);
+                    }
+                }
+                
+                // Check body template
+                if let Some(body) = &endpoint.body_template {
+                    for var in template::find_variables(body) {
+                        required_vars.insert(var);
+                    }
+                }
+                
+                // Check auth
+                if let Some(auth) = &endpoint.auth {
+                    match auth {
+                        crate::models::AuthConfig::Bearer { token } => {
+                            for var in template::find_variables(token) {
+                                required_vars.insert(var);
+                            }
+                        }
+                        crate::models::AuthConfig::Basic { username, password } => {
+                            for var in template::find_variables(username) {
+                                required_vars.insert(var);
+                            }
+                            for var in template::find_variables(password) {
+                                required_vars.insert(var);
+                            }
+                        }
+                        crate::models::AuthConfig::ApiKey { name, value, .. } => {
+                            for var in template::find_variables(name) {
+                                required_vars.insert(var);
+                            }
+                            for var in template::find_variables(value) {
+                                required_vars.insert(var);
+                            }
+                        }
+                    }
+                }
+                
+                let mut required_vars: Vec<String> = required_vars.into_iter().collect();
+                required_vars.sort();
+                
+                // Pre-fill with existing variable values
+                let mut variables = HashMap::new();
+                for var in &required_vars {
+                    if let Some(value) = self.variable_manager.get(var) {
+                        variables.insert(var.clone(), value.clone());
+                    } else {
+                        variables.insert(var.clone(), String::new());
+                    }
+                }
+                
+                if required_vars.is_empty() {
+                    // No variables needed, execute directly
+                    let runtime = tokio::runtime::Runtime::new().unwrap();
+                    runtime.block_on(self.execute_request(coll_idx, ep_idx));
+                } else {
+                    // Show variable input form
+                    self.variable_input_form = Some(VariableInputForm {
+                        variables,
+                        required_vars,
+                        current_index: 0,
+                        collection_index: coll_idx,
+                        endpoint_index: ep_idx,
+                    });
+                    self.current_screen = Screen::VariableInput(coll_idx, ep_idx);
+                }
+            }
+        }
+    }
+    
+    pub fn execute_request_with_variables(&mut self) {
+        if let Some(form) = &self.variable_input_form {
+            let coll_idx = form.collection_index;
+            let ep_idx = form.endpoint_index;
+            let variables = form.variables.clone();
+            
+            // Clear form
+            self.variable_input_form = None;
+            self.current_screen = Screen::EndpointDetail(coll_idx, ep_idx);
+            
+            // Execute request with variables
+            let runtime = tokio::runtime::Runtime::new().unwrap();
+            runtime.block_on(self.execute_request_with_vars(coll_idx, ep_idx, variables));
+        }
+    }
+    
+    async fn execute_request_with_vars(&mut self, coll_idx: usize, ep_idx: usize, variables: HashMap<String, String>) {
+        if let Some(collection) = self.collections.get(coll_idx) {
+            if let Some(endpoint) = collection.endpoints.get(ep_idx) {
+                self.status_message = Some("Executing request...".to_string());
+                
+                let mut inputs = RequestInputs::default();
+                inputs.variables = variables;
+                
+                match self.http_client.execute(endpoint, &inputs).await {
+                    Ok(response) => {
+                        // Format response
+                        let formatted = formatter::format_auto(&response.body)
+                            .unwrap_or_else(|_| String::from_utf8_lossy(&response.body).to_string());
+                        
+                        self.last_response = Some(response);
+                        self.last_response_formatted = Some(formatted);
+                        self.response_scroll_offset = 0;
+                        self.headers_scroll_offset = 0;
+                        self.status_message = Some("Request completed successfully".to_string());
+                        self.error_message = None;
+                    }
+                    Err(e) => {
+                        self.error_message = Some(format!("Request failed: {}", e));
+                        self.status_message = None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+impl AppState {
+    // Quick execute - execute immediately with saved variable values
+    pub fn quick_execute_request(&mut self, coll_idx: usize, ep_idx: usize) {
+        if let Some(collection) = self.collections.get(coll_idx) {
+            if let Some(endpoint) = collection.endpoints.get(ep_idx) {
+                // Find all variables needed for this endpoint
+                let mut required_vars = HashSet::new();
+                
+                // Check URL
+                for var in template::find_variables(&endpoint.url) {
+                    required_vars.insert(var);
+                }
+                
+                // Check headers
+                for value in endpoint.headers.values() {
+                    for var in template::find_variables(value) {
+                        required_vars.insert(var);
+                    }
+                }
+                
+                // Check body template
+                if let Some(body) = &endpoint.body_template {
+                    for var in template::find_variables(body) {
+                        required_vars.insert(var);
+                    }
+                }
+                
+                // Check auth
+                if let Some(auth) = &endpoint.auth {
+                    match auth {
+                        crate::models::AuthConfig::Bearer { token } => {
+                            for var in template::find_variables(token) {
+                                required_vars.insert(var);
+                            }
+                        }
+                        crate::models::AuthConfig::Basic { username, password } => {
+                            for var in template::find_variables(username) {
+                                required_vars.insert(var);
+                            }
+                            for var in template::find_variables(password) {
+                                required_vars.insert(var);
+                            }
+                        }
+                        crate::models::AuthConfig::ApiKey { name, value, .. } => {
+                            for var in template::find_variables(name) {
+                                required_vars.insert(var);
+                            }
+                            for var in template::find_variables(value) {
+                                required_vars.insert(var);
+                            }
+                        }
+                    }
+                }
+                
+                // Build variables map from saved values (skip faker variables)
+                let mut variables = HashMap::new();
+                for var in required_vars {
+                    // Skip faker variables - they'll be generated during substitution
+                    if crate::faker::is_faker_variable(&var) {
+                        continue;
+                    }
+                    
+                    // Check if user variable exists
+                    if let Some(value) = self.variable_manager.get(&var) {
+                        variables.insert(var.clone(), value.clone());
+                    } else {
+                        // Variable not found - show error
+                        self.error_message = Some(format!("Variable '{}' not defined. Press 'v' to manage variables.", var));
+                        self.status_message = None;
+                        return;
+                    }
+                }
+                
+                // Execute request with variables (faker variables will be generated during substitution)
+                let runtime = tokio::runtime::Runtime::new().unwrap();
+                runtime.block_on(self.execute_request_with_vars(coll_idx, ep_idx, variables));
             }
         }
     }

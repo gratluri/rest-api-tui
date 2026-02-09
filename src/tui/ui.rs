@@ -360,16 +360,24 @@ fn run_app_loop<B: Backend>(
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
                         if !in_edit_screen {
-                            let max = match app.panel_focus {
-                                crate::tui_app::PanelFocus::Collections => app.collections.len(),
-                                crate::tui_app::PanelFocus::Endpoints => {
-                                    app.collections.get(app.selected_collection_index)
-                                        .map(|c| c.endpoints.len())
-                                        .unwrap_or(0)
+                            // Handle variable list navigation
+                            if matches!(app.current_screen, Screen::VariableList) {
+                                let max = app.variable_manager.len();
+                                if max > 0 && app.selected_index > 0 {
+                                    app.selected_index -= 1;
                                 }
-                            };
-                            if max > 0 {
-                                app.navigate_up();
+                            } else {
+                                let max = match app.panel_focus {
+                                    crate::tui_app::PanelFocus::Collections => app.collections.len(),
+                                    crate::tui_app::PanelFocus::Endpoints => {
+                                        app.collections.get(app.selected_collection_index)
+                                            .map(|c| c.endpoints.len())
+                                            .unwrap_or(0)
+                                    }
+                                };
+                                if max > 0 {
+                                    app.navigate_up();
+                                }
                             }
                         } else if key.code == KeyCode::Char('k') {
                             // In edit screen, 'k' is just a character
@@ -396,16 +404,24 @@ fn run_app_loop<B: Backend>(
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
                         if !in_edit_screen {
-                            let max = match app.panel_focus {
-                                crate::tui_app::PanelFocus::Collections => app.collections.len(),
-                                crate::tui_app::PanelFocus::Endpoints => {
-                                    app.collections.get(app.selected_collection_index)
-                                        .map(|c| c.endpoints.len())
-                                        .unwrap_or(0)
+                            // Handle variable list navigation
+                            if matches!(app.current_screen, Screen::VariableList) {
+                                let max = app.variable_manager.len();
+                                if max > 0 && app.selected_index < max - 1 {
+                                    app.selected_index += 1;
                                 }
-                            };
-                            if max > 0 {
-                                app.navigate_down(max);
+                            } else {
+                                let max = match app.panel_focus {
+                                    crate::tui_app::PanelFocus::Collections => app.collections.len(),
+                                    crate::tui_app::PanelFocus::Endpoints => {
+                                        app.collections.get(app.selected_collection_index)
+                                            .map(|c| c.endpoints.len())
+                                            .unwrap_or(0)
+                                    }
+                                };
+                                if max > 0 {
+                                    app.navigate_down(max);
+                                }
                             }
                         } else if key.code == KeyCode::Char('j') {
                             // In edit screen, 'j' is just a character
@@ -451,6 +467,14 @@ fn run_app_loop<B: Backend>(
                                 // Start load test with configured parameters
                                 app.execute_load_test();
                             }
+                            Screen::VariableEdit(_) => {
+                                // Save variable
+                                app.save_variable();
+                            }
+                            Screen::VariableInput(_, _) => {
+                                // Execute request with variables
+                                app.execute_request_with_variables();
+                            }
                             Screen::CollectionList => {
                                 // In new layout, Enter selects endpoint to view
                                 if app.panel_focus == crate::tui_app::PanelFocus::Endpoints {
@@ -483,6 +507,30 @@ fn run_app_loop<B: Backend>(
                                         1 => form.duration.push(c),
                                         2 => form.ramp_up.push(c),
                                         _ => {}
+                                    }
+                                }
+                            }
+                            continue;
+                        }
+                        
+                        // Check if in VariableEdit screen - handle text input
+                        if matches!(app.current_screen, Screen::VariableEdit(_)) {
+                            if let Some(form) = &mut app.variable_form {
+                                match form.current_field {
+                                    0 => form.key.push(c),
+                                    1 => form.value.push(c),
+                                    _ => {}
+                                }
+                            }
+                            continue;
+                        }
+                        
+                        // Check if in VariableInput screen - handle text input
+                        if matches!(app.current_screen, Screen::VariableInput(_, _)) {
+                            if let Some(form) = &mut app.variable_input_form {
+                                if let Some(var_name) = form.required_vars.get(form.current_index) {
+                                    if let Some(value) = form.variables.get_mut(var_name) {
+                                        value.push(c);
                                     }
                                 }
                             }
@@ -574,25 +622,36 @@ fn run_app_loop<B: Backend>(
                             // Not in edit screen, handle as commands
                             match c {
                                 'n' => {
-                                    // New collection or endpoint based on panel focus
-                                    match app.panel_focus {
-                                        crate::tui_app::PanelFocus::Collections => {
-                                            app.start_new_collection();
-                                        }
-                                        crate::tui_app::PanelFocus::Endpoints => {
-                                            app.start_new_endpoint(app.selected_collection_index);
+                                    // New collection, endpoint, or variable based on screen
+                                    if matches!(app.current_screen, Screen::VariableList) {
+                                        app.start_new_variable();
+                                    } else {
+                                        // New collection or endpoint based on panel focus
+                                        match app.panel_focus {
+                                            crate::tui_app::PanelFocus::Collections => {
+                                                app.start_new_collection();
+                                            }
+                                            crate::tui_app::PanelFocus::Endpoints => {
+                                                app.start_new_endpoint(app.selected_collection_index);
+                                            }
                                         }
                                     }
                                 }
                                 'e' => {
                                     // Edit or Execute based on context
-                                    if matches!(app.current_screen, Screen::EndpointDetail(_, _)) {
-                                        // Execute request
-                                        let runtime = tokio::runtime::Runtime::new().unwrap();
-                                        runtime.block_on(app.execute_request(
+                                    if matches!(app.current_screen, Screen::VariableList) {
+                                        // Edit variable
+                                        let keys = app.variable_manager.keys();
+                                        if app.selected_index < keys.len() {
+                                            let key = keys[app.selected_index].clone();
+                                            app.start_edit_variable(key);
+                                        }
+                                    } else if matches!(app.current_screen, Screen::EndpointDetail(_, _)) {
+                                        // Execute request with variable detection
+                                        app.start_variable_input(
                                             app.selected_collection_index,
                                             app.selected_endpoint_index
-                                        ));
+                                        );
                                     } else {
                                         // Edit collection or endpoint based on panel focus
                                         match app.panel_focus {
@@ -615,20 +674,30 @@ fn run_app_loop<B: Backend>(
                                     }
                                 }
                                 'd' => {
-                                    // Delete collection or endpoint based on panel focus
-                                    match app.panel_focus {
-                                        crate::tui_app::PanelFocus::Collections => {
-                                            if app.selected_collection_index < app.collections.len() {
-                                                app.confirm_delete_collection(app.selected_collection_index);
-                                            }
+                                    // Delete collection, endpoint, or variable based on screen
+                                    if matches!(app.current_screen, Screen::VariableList) {
+                                        // Delete variable
+                                        let keys = app.variable_manager.keys();
+                                        if app.selected_index < keys.len() {
+                                            let key = keys[app.selected_index].clone();
+                                            app.confirm_delete_variable(key);
                                         }
-                                        crate::tui_app::PanelFocus::Endpoints => {
-                                            if let Some(collection) = app.collections.get(app.selected_collection_index) {
-                                                if app.selected_endpoint_index < collection.endpoints.len() {
-                                                    app.confirm_delete_endpoint(
-                                                        app.selected_collection_index,
-                                                        app.selected_endpoint_index
-                                                    );
+                                    } else {
+                                        // Delete collection or endpoint based on panel focus
+                                        match app.panel_focus {
+                                            crate::tui_app::PanelFocus::Collections => {
+                                                if app.selected_collection_index < app.collections.len() {
+                                                    app.confirm_delete_collection(app.selected_collection_index);
+                                                }
+                                            }
+                                            crate::tui_app::PanelFocus::Endpoints => {
+                                                if let Some(collection) = app.collections.get(app.selected_collection_index) {
+                                                    if app.selected_endpoint_index < collection.endpoints.len() {
+                                                        app.confirm_delete_endpoint(
+                                                            app.selected_collection_index,
+                                                            app.selected_endpoint_index
+                                                        );
+                                                    }
                                                 }
                                             }
                                         }
@@ -645,6 +714,24 @@ fn run_app_loop<B: Backend>(
                                         }
                                     }
                                 }
+                                'v' => {
+                                    // Open variable list
+                                    app.current_screen = Screen::VariableList;
+                                }
+                                'x' => {
+                                    // Quick execute - execute endpoint directly from main screen
+                                    if app.panel_focus == crate::tui_app::PanelFocus::Endpoints {
+                                        if let Some(collection) = app.collections.get(app.selected_collection_index) {
+                                            if app.selected_endpoint_index < collection.endpoints.len() {
+                                                // Execute immediately with saved variable values
+                                                app.quick_execute_request(
+                                                    app.selected_collection_index,
+                                                    app.selected_endpoint_index
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
                                 't' => {
                                     // Toggle network traffic display
                                     app.toggle_network_traffic();
@@ -652,6 +739,26 @@ fn run_app_loop<B: Backend>(
                                 'H' => {
                                     // Toggle response headers display
                                     app.toggle_response_headers();
+                                }
+                                'y' => {
+                                    // Copy response to clipboard
+                                    if matches!(app.current_screen, Screen::EndpointDetail(_, _)) && app.last_response.is_some() {
+                                        app.copy_response_to_clipboard();
+                                    }
+                                }
+                                ' ' => {
+                                    // Toggle collapsible sections (Space key)
+                                    // Only works when viewing endpoint details with response
+                                    if matches!(app.current_screen, Screen::EndpointDetail(_, _)) && app.last_response.is_some() {
+                                        // Determine which section to toggle based on context
+                                        // If response headers are shown, toggle headers section
+                                        // If network traffic is shown, toggle network traffic section
+                                        if app.show_response_headers {
+                                            app.toggle_section_collapsed("response_headers");
+                                        } else if app.show_network_traffic {
+                                            app.toggle_section_collapsed("network_traffic");
+                                        }
+                                    }
                                 }
                                 _ => {}
                             }
@@ -667,6 +774,24 @@ fn run_app_loop<B: Backend>(
                                         1 => { form.duration.pop(); }
                                         2 => { form.ramp_up.pop(); }
                                         _ => {}
+                                    }
+                                }
+                            }
+                            Screen::VariableEdit(_) => {
+                                if let Some(form) = &mut app.variable_form {
+                                    match form.current_field {
+                                        0 => { form.key.pop(); }
+                                        1 => { form.value.pop(); }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            Screen::VariableInput(_, _) => {
+                                if let Some(form) = &mut app.variable_input_form {
+                                    if let Some(var_name) = form.required_vars.get(form.current_index) {
+                                        if let Some(value) = form.variables.get_mut(var_name) {
+                                            value.pop();
+                                        }
                                     }
                                 }
                             }
@@ -701,7 +826,7 @@ fn run_app_loop<B: Backend>(
                         }
                     }
                     KeyCode::Tab => {
-                        // Move to next field in endpoint edit
+                        // Move to next field in forms
                         if let Screen::EndpointEdit(_, _) = app.current_screen {
                             if let Some(form) = &mut app.endpoint_form {
                                 if form.header_edit_mode {
@@ -716,10 +841,18 @@ fn run_app_loop<B: Backend>(
                             if let Some(form) = &mut app.load_test_config_form {
                                 form.current_field = (form.current_field + 1) % 3;
                             }
+                        } else if let Screen::VariableEdit(_) = app.current_screen {
+                            if let Some(form) = &mut app.variable_form {
+                                form.current_field = (form.current_field + 1) % 2;
+                            }
+                        } else if let Screen::VariableInput(_, _) = app.current_screen {
+                            if let Some(form) = &mut app.variable_input_form {
+                                form.current_index = (form.current_index + 1) % form.required_vars.len();
+                            }
                         }
                     }
                     KeyCode::BackTab => {
-                        // Move to previous field in endpoint edit (Shift+Tab)
+                        // Move to previous field in forms (Shift+Tab)
                         if let Screen::EndpointEdit(_, _) = app.current_screen {
                             if let Some(form) = &mut app.endpoint_form {
                                 if form.header_edit_mode {
@@ -742,28 +875,55 @@ fn run_app_loop<B: Backend>(
                                     form.current_field - 1
                                 };
                             }
+                        } else if let Screen::VariableEdit(_) = app.current_screen {
+                            if let Some(form) = &mut app.variable_form {
+                                form.current_field = if form.current_field == 0 { 1 } else { 0 };
+                            }
+                        } else if let Screen::VariableInput(_, _) = app.current_screen {
+                            if let Some(form) = &mut app.variable_input_form {
+                                form.current_index = if form.current_index == 0 {
+                                    form.required_vars.len() - 1
+                                } else {
+                                    form.current_index - 1
+                                };
+                            }
                         }
                     }
                     KeyCode::PageUp => {
-                        // Scroll response up (10 lines)
+                        // Shift+PageUp: Scroll headers up (5 lines)
+                        // PageUp: Scroll response up (10 lines)
                         if !in_edit_screen {
-                            app.scroll_response_up(10);
+                            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                app.scroll_headers_up(5);
+                            } else {
+                                app.scroll_response_up(10);
+                            }
                         }
                     }
                     KeyCode::PageDown => {
-                        // Scroll response down (10 lines)
+                        // Shift+PageDown: Scroll headers down (5 lines)
+                        // PageDown: Scroll response down (10 lines)
                         if !in_edit_screen {
-                            app.scroll_response_down(10);
+                            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                app.scroll_headers_down(5);
+                            } else {
+                                app.scroll_response_down(10);
+                            }
                         }
                     }
                     KeyCode::Home => {
-                        // Scroll to top of response
+                        // Shift+Home: Scroll to top of headers
+                        // Home: Scroll to top of response
                         if !in_edit_screen {
-                            app.reset_response_scroll();
+                            if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                app.reset_headers_scroll();
+                            } else {
+                                app.reset_response_scroll();
+                            }
                         }
                     }
                     KeyCode::End => {
-                        // Scroll to bottom of response
+                        // End: Scroll to bottom of response (headers don't need End)
                         if !in_edit_screen {
                             app.scroll_response_to_end();
                         }
@@ -800,6 +960,9 @@ fn draw_ui(f: &mut Frame, app: &AppState) {
             Screen::EndpointEdit(coll_idx, _) => draw_endpoint_edit(f, chunks[1], app, *coll_idx),
             Screen::LoadTestConfig(_, _) => draw_load_test_config(f, chunks[1], app),
             Screen::LoadTestRunning(coll_idx, ep_idx) => draw_load_test(f, chunks[1], app, *coll_idx, *ep_idx),
+            Screen::VariableList => draw_variable_list(f, chunks[1], app),
+            Screen::VariableEdit(_) => draw_variable_edit(f, chunks[1], app),
+            Screen::VariableInput(_, _) => draw_variable_input(f, chunks[1], app),
             Screen::ConfirmDelete(_) => draw_confirm_delete(f, chunks[1], app),
             Screen::Help => draw_help(f, chunks[1]),
             _ => {}
@@ -869,7 +1032,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &AppState) {
             Span::styled(status, Style::default().fg(Color::Green)),
         ])
     } else {
-        Line::from("⌨ Ctrl+h/l: panels | Ctrl+j/k: nav | PgUp/PgDn: scroll | t: traffic | ?: help")
+        Line::from("⌨ Ctrl+h/l: panels | Ctrl+j/k: nav | x: quick exec | PgUp/PgDn: scroll | ?: help")
     };
     
     let footer = Paragraph::new(text)
@@ -1538,7 +1701,29 @@ fn draw_help(f: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from(vec![Span::styled("🚀 Endpoint Actions:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
         Line::from("  e          - Execute request (from detail)"),
+        Line::from("  x          - Quick execute (from main screen)"),
         Line::from("  l          - Start load test"),
+        Line::from(""),
+        Line::from(vec![Span::styled("🔧 Variable Management:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+        Line::from("  v          - Open variable list"),
+        Line::from("  n          - New variable (in variable list)"),
+        Line::from("  e          - Edit variable (in variable list)"),
+        Line::from("  d          - Delete variable (in variable list)"),
+        Line::from(""),
+        Line::from(vec![Span::styled("👁️ View Options:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+        Line::from("  t          - Toggle network traffic"),
+        Line::from("  H          - Toggle response headers"),
+        Line::from("  Space      - Collapse/expand sections"),
+        Line::from(""),
+        Line::from(vec![Span::styled("📋 Clipboard:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+        Line::from("  y          - Copy response to clipboard"),
+        Line::from(""),
+        Line::from(vec![Span::styled("📜 Scrolling:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
+        Line::from("  PgUp/PgDn  - Scroll response body"),
+        Line::from("  Shift+PgUp/PgDn - Scroll headers"),
+        Line::from("  Home       - Top of response"),
+        Line::from("  Shift+Home - Top of headers"),
+        Line::from("  End        - Bottom of response"),
         Line::from(""),
         Line::from(vec![Span::styled("✏️ Form Editing:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))]),
         Line::from("  Tab        - Next field"),
@@ -1836,16 +2021,23 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             
             // If headers are shown, split the top section further
             if app.show_response_headers {
+                let is_headers_collapsed = app.is_section_collapsed("response_headers");
+                let headers_height = if is_headers_collapsed {
+                    3 // Just the title bar when collapsed
+                } else {
+                    response.headers.len() as u16 + 2
+                };
+                
                 let body_sections = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(response.headers.len() as u16 + 2), // Headers
+                        Constraint::Length(headers_height), // Headers
                         Constraint::Min(0), // Body
                     ])
                     .split(sections[0]);
                 
                 // Draw headers
-                draw_response_headers(f, body_sections[0], response);
+                draw_response_headers(f, body_sections[0], response, app);
                 
                 // Draw body in remaining space
                 draw_response_body(f, body_sections[1], app, response, formatted_body, is_json, &header_text);
@@ -1855,7 +2047,7 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
             }
             
             // Draw network traffic
-            draw_network_traffic(f, sections[1], response);
+            draw_network_traffic(f, sections[1], response, app);
         } else {
             // Show only response body with optional headers
             let formatted_body = app.last_response_formatted.as_ref()
@@ -1863,16 +2055,23 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
                 .unwrap_or("(unable to format response)");
             
             if app.show_response_headers {
+                let is_headers_collapsed = app.is_section_collapsed("response_headers");
+                let headers_height = if is_headers_collapsed {
+                    3 // Just the title bar when collapsed
+                } else {
+                    response.headers.len() as u16 + 2
+                };
+                
                 let sections = Layout::default()
                     .direction(Direction::Vertical)
                     .constraints([
-                        Constraint::Length(response.headers.len() as u16 + 2), // Headers
+                        Constraint::Length(headers_height), // Headers
                         Constraint::Min(0), // Body
                     ])
                     .split(area);
                 
                 // Draw headers
-                draw_response_headers(f, sections[0], response);
+                draw_response_headers(f, sections[0], response, app);
                 
                 // Draw body
                 draw_response_body(f, sections[1], app, response, formatted_body, is_json, &header_text);
@@ -1911,18 +2110,59 @@ fn draw_response_panel(f: &mut Frame, area: Rect, app: &AppState) {
     }
 }
 
-fn draw_response_headers(f: &mut Frame, area: Rect, response: &crate::http::HttpResponse) {
+fn draw_response_headers(f: &mut Frame, area: Rect, response: &crate::http::HttpResponse, app: &AppState) {
+    let is_collapsed = app.is_section_collapsed("response_headers");
+    let collapse_indicator = if is_collapsed { "▶" } else { "▼" };
+    
+    let mut all_header_lines = vec![];
+    
+    if !is_collapsed {
+        for (key, value) in &response.headers {
+            all_header_lines.push(Line::from(vec![
+                Span::styled(format!("  {}: ", key), Style::default().fg(Color::Yellow)),
+                Span::raw(value),
+            ]));
+        }
+    }
+    
+    // Calculate visible lines with scrolling
+    let total_lines = all_header_lines.len();
+    let visible_height = area.height.saturating_sub(2) as usize; // Subtract 2 for borders
+    let max_scroll = if total_lines > visible_height {
+        total_lines - visible_height
+    } else {
+        0
+    };
+    let scroll_offset = app.headers_scroll_offset.min(max_scroll);
+    
+    // Build final lines with title and scrolled content
     let mut header_lines = vec![
         Line::from(vec![
-            Span::styled("📋 Response Headers", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled(format!("{} 📋 Response Headers [Space: collapse/expand]", collapse_indicator), 
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
         ]),
     ];
     
-    for (key, value) in &response.headers {
-        header_lines.push(Line::from(vec![
-            Span::styled(format!("  {}: ", key), Style::default().fg(Color::Yellow)),
-            Span::raw(value),
-        ]));
+    if !is_collapsed {
+        let visible_lines: Vec<Line> = all_header_lines.into_iter()
+            .skip(scroll_offset)
+            .take(visible_height)
+            .collect();
+        header_lines.extend(visible_lines);
+        
+        // Add scroll indicator if there are more lines
+        if total_lines > visible_height {
+            header_lines.push(Line::from(vec![
+                Span::styled(
+                    format!("  [Showing {}-{} of {} headers | ↑/↓ to scroll]", 
+                        scroll_offset + 1, 
+                        (scroll_offset + visible_height).min(total_lines),
+                        total_lines
+                    ),
+                    Style::default().fg(Color::DarkGray)
+                ),
+            ]));
+        }
     }
     
     let paragraph = Paragraph::new(header_lines)
@@ -2009,87 +2249,94 @@ fn draw_response_body(
     f.render_widget(paragraph, area);
 }
 
-fn draw_network_traffic(f: &mut Frame, area: Rect, response: &crate::http::HttpResponse) {
+fn draw_network_traffic(f: &mut Frame, area: Rect, response: &crate::http::HttpResponse, app: &AppState) {
     if let Some(traffic) = &response.traffic {
+        let is_collapsed = app.is_section_collapsed("network_traffic");
+        let collapse_indicator = if is_collapsed { "▶" } else { "▼" };
+        
         let mut lines = vec![
             Line::from(vec![
-                Span::styled("📡 Network Traffic ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::styled(format!("{} 📡 Network Traffic [Space: collapse/expand] ", collapse_indicator), 
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
                 Span::styled("(Wireshark-style)", Style::default().fg(Color::DarkGray)),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("⏱️  Timing Breakdown:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
             ]),
         ];
         
-        // Timing information
-        if let Some(dns) = traffic.timing.dns_lookup {
-            lines.push(Line::from(format!("  🔍 DNS Lookup:        {:?}", dns)));
-        }
-        if let Some(tcp) = traffic.timing.tcp_connect {
-            lines.push(Line::from(format!("  🔌 TCP Connect:       {:?}", tcp)));
-        }
-        if let Some(tls) = traffic.timing.tls_handshake {
-            lines.push(Line::from(format!("  🔐 TLS Handshake:     {:?}", tls)));
-        }
-        lines.push(Line::from(format!("  📤 Request Sent:      {:?}", traffic.timing.request_sent)));
-        lines.push(Line::from(format!("  ⏳ Waiting (TTFB):    {:?}", traffic.timing.waiting)));
-        lines.push(Line::from(format!("  📥 Content Download:  {:?}", traffic.timing.content_download)));
-        lines.push(Line::from(vec![
-            Span::styled("  ⚡ Total:             ", Style::default()),
-            Span::styled(format!("{:?}", traffic.timing.total), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        ]));
-        
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("📤 Request:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]));
-        lines.push(Line::from(format!("  {} {}", traffic.request.method, traffic.request.url)));
-        lines.push(Line::from(format!("  📋 Headers: {} ({} bytes)", 
-            traffic.request.headers.len(),
-            traffic.request.headers.iter().map(|(k, v)| k.len() + v.len() + 4).sum::<usize>()
-        )));
-        
-        // Show first few headers
-        let mut header_count = 0;
-        for (key, value) in &traffic.request.headers {
-            if header_count < 3 {
-                let display_value = if value.len() > 50 {
-                    format!("{}...", &value[..50])
-                } else {
-                    value.clone()
-                };
-                lines.push(Line::from(format!("    {}: {}", key, display_value)));
-                header_count += 1;
+        if !is_collapsed {
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("⏱️  Timing Breakdown:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]));
+            
+            // Timing information
+            if let Some(dns) = traffic.timing.dns_lookup {
+                lines.push(Line::from(format!("  🔍 DNS Lookup:        {:?}", dns)));
             }
-        }
-        if traffic.request.headers.len() > 3 {
-            lines.push(Line::from(format!("    ... and {} more", traffic.request.headers.len() - 3)));
-        }
-        
-        lines.push(Line::from(format!("  📦 Body: {} bytes", traffic.request.body_size)));
-        
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("📥 Response:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
-        ]));
-        lines.push(Line::from(format!("  ✓ Status: {}", response.status)));
-        lines.push(Line::from(format!("  📋 Headers: {} ({} bytes)", 
-            response.headers.len(),
-            traffic.response_headers_size
-        )));
-        lines.push(Line::from(format!("  📦 Body: {} bytes", traffic.response_body_size)));
-        
-        lines.push(Line::from(""));
-        lines.push(Line::from(vec![
-            Span::styled("📊 Total Transfer: ", Style::default().fg(Color::Gray)),
-            Span::styled(
-                format!("{} bytes", 
-                    traffic.request.body_size + traffic.response_headers_size + traffic.response_body_size
+            if let Some(tcp) = traffic.timing.tcp_connect {
+                lines.push(Line::from(format!("  🔌 TCP Connect:       {:?}", tcp)));
+            }
+            if let Some(tls) = traffic.timing.tls_handshake {
+                lines.push(Line::from(format!("  🔐 TLS Handshake:     {:?}", tls)));
+            }
+            lines.push(Line::from(format!("  📤 Request Sent:      {:?}", traffic.timing.request_sent)));
+            lines.push(Line::from(format!("  ⏳ Waiting (TTFB):    {:?}", traffic.timing.waiting)));
+            lines.push(Line::from(format!("  📥 Content Download:  {:?}", traffic.timing.content_download)));
+            lines.push(Line::from(vec![
+                Span::styled("  ⚡ Total:             ", Style::default()),
+                Span::styled(format!("{:?}", traffic.timing.total), Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]));
+            
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("📤 Request:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]));
+            lines.push(Line::from(format!("  {} {}", traffic.request.method, traffic.request.url)));
+            lines.push(Line::from(format!("  📋 Headers: {} ({} bytes)", 
+                traffic.request.headers.len(),
+                traffic.request.headers.iter().map(|(k, v)| k.len() + v.len() + 4).sum::<usize>()
+            )));
+            
+            // Show first few headers
+            let mut header_count = 0;
+            for (key, value) in &traffic.request.headers {
+                if header_count < 3 {
+                    let display_value = if value.len() > 50 {
+                        format!("{}...", &value[..50])
+                    } else {
+                        value.clone()
+                    };
+                    lines.push(Line::from(format!("    {}: {}", key, display_value)));
+                    header_count += 1;
+                }
+            }
+            if traffic.request.headers.len() > 3 {
+                lines.push(Line::from(format!("    ... and {} more", traffic.request.headers.len() - 3)));
+            }
+            
+            lines.push(Line::from(format!("  📦 Body: {} bytes", traffic.request.body_size)));
+            
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("📥 Response:", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            ]));
+            lines.push(Line::from(format!("  ✓ Status: {}", response.status)));
+            lines.push(Line::from(format!("  📋 Headers: {} ({} bytes)", 
+                response.headers.len(),
+                traffic.response_headers_size
+            )));
+            lines.push(Line::from(format!("  📦 Body: {} bytes", traffic.response_body_size)));
+            
+            lines.push(Line::from(""));
+            lines.push(Line::from(vec![
+                Span::styled("📊 Total Transfer: ", Style::default().fg(Color::Gray)),
+                Span::styled(
+                    format!("{} bytes", 
+                        traffic.request.body_size + traffic.response_headers_size + traffic.response_body_size
+                    ),
+                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
                 ),
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
-            ),
-        ]));
+            ]));
+        }
         
         let paragraph = Paragraph::new(lines)
             .block(Block::default()
@@ -2236,5 +2483,225 @@ fn draw_collections_panel(f: &mut Frame, area: Rect, app: &AppState) {
             .alignment(ratatui::layout::Alignment::Center);
 
         f.render_widget(paragraph, sections[1]);
+    }
+}
+
+// Variable management screens
+
+fn draw_variable_list(f: &mut Frame, area: Rect, app: &AppState) {
+    let keys = app.variable_manager.keys();
+    
+    let items: Vec<ListItem> = keys
+        .iter()
+        .enumerate()
+        .map(|(i, key)| {
+            let style = if i == app.selected_index {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            
+            let empty_string = String::new();
+            let value = app.variable_manager.get(key).unwrap_or(&empty_string);
+            let display_value = if value.len() > 40 {
+                format!("{}...", &value[..40])
+            } else {
+                value.clone()
+            };
+            
+            let content = Line::from(vec![
+                Span::styled(format!("{}: ", key), Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+                Span::raw(display_value),
+            ]);
+            
+            ListItem::new(content).style(style)
+        })
+        .collect();
+    
+    let title = if keys.is_empty() {
+        "🔧 Variables [n: new | Esc: back]"
+    } else {
+        "🔧 Variables [n: new | e: edit | d: delete | Esc: back]"
+    };
+    
+    let list = List::new(items)
+        .block(Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(Color::Magenta)))
+        .highlight_style(Style::default().add_modifier(Modifier::BOLD))
+        .highlight_symbol("▶ ");
+    
+    f.render_widget(list, area);
+    
+    // Show help text if no variables
+    if keys.is_empty() {
+        let help_area = Rect {
+            x: area.x + 2,
+            y: area.y + 3,
+            width: area.width.saturating_sub(4),
+            height: area.height.saturating_sub(6),
+        };
+        
+        let help_text = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("📭 No variables defined", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Variables allow you to use placeholders in your requests", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(vec![
+                Span::styled("Use {{variable_name}} syntax in URLs, headers, and body", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("Press 'n' to create your first variable", Style::default().fg(Color::Green)),
+            ]),
+        ];
+        
+        let paragraph = Paragraph::new(help_text)
+            .alignment(ratatui::layout::Alignment::Center);
+        
+        f.render_widget(paragraph, help_area);
+    }
+}
+
+fn draw_variable_edit(f: &mut Frame, area: Rect, app: &AppState) {
+    if let Some(form) = &app.variable_form {
+        let is_new = form.editing_key.is_none();
+        let title = if is_new {
+            "✏️ New Variable [Tab: next field | Enter: save | Esc: cancel]"
+        } else {
+            "✏️ Edit Variable [Tab: next field | Enter: save | Esc: cancel]"
+        };
+        
+        let key_style = if form.current_field == 0 {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        
+        let value_style = if form.current_field == 1 {
+            Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::White)
+        };
+        
+        let cursor = "_";
+        
+        let text = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("🔧 Define a variable for use in requests:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("🏷️  Key: ", Style::default().fg(Color::Cyan)),
+                Span::styled(&form.key, key_style),
+                Span::styled(if form.current_field == 0 { cursor } else { "" }, key_style.add_modifier(Modifier::SLOW_BLINK)),
+            ]),
+            Line::from(vec![
+                Span::styled("   Variable name (e.g., API_URL, AUTH_TOKEN)", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("💾 Value: ", Style::default().fg(Color::Cyan)),
+                Span::styled(&form.value, value_style),
+                Span::styled(if form.current_field == 1 { cursor } else { "" }, value_style.add_modifier(Modifier::SLOW_BLINK)),
+            ]),
+            Line::from(vec![
+                Span::styled("   Variable value (e.g., https://api.example.com)", Style::default().fg(Color::DarkGray)),
+            ]),
+            Line::from(""),
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("💡 Usage:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(vec![
+                Span::styled("   Use ", Style::default().fg(Color::Gray)),
+                Span::styled("{{", Style::default().fg(Color::Yellow)),
+                Span::styled(&form.key, Style::default().fg(Color::Cyan)),
+                Span::styled("}}", Style::default().fg(Color::Yellow)),
+                Span::styled(" in URLs, headers, or body", Style::default().fg(Color::Gray)),
+            ]),
+            Line::from(vec![
+                Span::styled("   Example: ", Style::default().fg(Color::Gray)),
+                Span::styled("{{API_URL}}/users", Style::default().fg(Color::White)),
+            ]),
+        ];
+        
+        let paragraph = Paragraph::new(text)
+            .block(Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Magenta)))
+            .wrap(Wrap { trim: true });
+        
+        f.render_widget(paragraph, area);
+    }
+}
+
+fn draw_variable_input(f: &mut Frame, area: Rect, app: &AppState) {
+    if let Some(form) = &app.variable_input_form {
+        let title = "🔧 Provide Variable Values [Tab: next | Enter: execute | Esc: cancel]";
+        
+        let mut text = vec![
+            Line::from(""),
+            Line::from(vec![
+                Span::styled("📝 This request requires the following variables:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            ]),
+            Line::from(""),
+        ];
+        
+        for (i, var_name) in form.required_vars.iter().enumerate() {
+            let is_current = i == form.current_index;
+            let value_str = form.variables.get(var_name).map(|s| s.as_str()).unwrap_or("");
+            
+            let label_style = if is_current {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Cyan)
+            };
+            
+            let value_style = if is_current {
+                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+            
+            let cursor = if is_current { "_" } else { "" };
+            
+            text.push(Line::from(vec![
+                Span::styled(format!("  {}: ", var_name), label_style),
+                Span::styled(value_str.to_string(), value_style),
+                Span::styled(cursor, value_style.add_modifier(Modifier::SLOW_BLINK)),
+            ]));
+        }
+        
+        text.push(Line::from(""));
+        text.push(Line::from(""));
+        text.push(Line::from(vec![
+            Span::styled("💡 Tip:", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+        ]));
+        text.push(Line::from(vec![
+            Span::styled("   Values are pre-filled from saved variables", Style::default().fg(Color::Gray)),
+        ]));
+        text.push(Line::from(vec![
+            Span::styled("   Edit as needed and press Enter to execute", Style::default().fg(Color::Gray)),
+        ]));
+        
+        let paragraph = Paragraph::new(text)
+            .block(Block::default()
+                .title(title)
+                .borders(Borders::ALL)
+                .border_type(BorderType::Rounded)
+                .border_style(Style::default().fg(Color::Magenta)))
+            .wrap(Wrap { trim: true });
+        
+        f.render_widget(paragraph, area);
     }
 }

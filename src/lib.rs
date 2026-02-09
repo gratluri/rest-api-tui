@@ -4,6 +4,8 @@ pub mod storage;
 pub mod http;
 pub mod formatter;
 pub mod load_test;
+pub mod variables;
+pub mod faker;
 pub mod tui_app;
 pub mod app;
 pub mod tui;

@@ -24,6 +24,9 @@ thiserror = "1.0"
 dirs = "5.0"
 urlencoding = "2.1"
 base64 = "0.22"
+arboard = "3.4"
+fake = { version = "2.9", features = ["derive", "chrono", "http", "uuid"] }
+rand = "0.8"
 
 [dev-dependencies]
 proptest = "1.5"

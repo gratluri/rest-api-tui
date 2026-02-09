@@ -41,6 +41,9 @@ A powerful terminal-based REST API testing tool with a modern split-panel interf
 - Request body templates with variables
 - Authentication (Bearer, Basic, API Key)
 - Template variable substitution `{{variable}}`
+- User-defined variables with persistent storage
+- Faker library integration for dynamic test data `{{f:variablename}}`
+- Quick execute mode for rapid testing
 
 ### ⚡ Load Testing
 - Concurrent request execution
@@ -53,6 +56,8 @@ A powerful terminal-based REST API testing tool with a modern split-panel interf
 - Ctrl+h/l for panel switching
 - No mouse required
 - Fast, efficient workflow
+- Clipboard support (copy response with 'y')
+- Collapsible sections (Space to toggle)
 
 ## Installation
 
@@ -104,17 +109,32 @@ cargo run
 
 ### 4. Execute the Request
 
+**Option A: Execute with Variable Prompt (e)**
 1. Press **Enter** to select the endpoint
 2. Press **'e'** to execute the request
-3. View the response in the bottom panel
-4. Press **'t'** to toggle network traffic view
+3. If variables are detected, you'll be prompted to review/edit values
+4. Press **Enter** to execute
+5. View the response in the bottom panel
 
-### 5. Scroll Through Response
+**Option B: Quick Execute (x)**
+1. Navigate to the endpoint
+2. Press **'x'** for instant execution
+3. Uses saved variable values (no prompts)
+4. Faker variables generate new data each time
+5. View the response immediately
+
+**Tip**: Use 'e' when you want to review variables, use 'x' for rapid testing.
+
+### 5. View and Copy Response
 
 - **PageDown**: Scroll down
 - **PageUp**: Scroll up
 - **Home**: Jump to top
 - **End**: Jump to bottom
+- **'y'**: Copy response to clipboard
+- **'t'**: Toggle network traffic view
+- **'H'**: Toggle response headers
+- **Space**: Collapse/expand sections
 
 ## User Interface
 
@@ -180,14 +200,19 @@ cargo run
 | **n** | New collection/endpoint (based on focused panel) |
 | **e** | Edit collection/endpoint OR execute request |
 | **d** | Delete collection/endpoint (with confirmation) |
+| **v** | Open variable manager |
 
 ### Request Execution
 
 | Key | Action |
 |-----|--------|
-| **e** | Execute request (when endpoint is selected) |
+| **e** | Execute request (prompts for variables if needed) |
+| **x** | Quick execute (uses saved variable values) |
 | **l** | Start load test |
 | **t** | Toggle network traffic view |
+| **H** | Toggle response headers display |
+| **Space** | Collapse/expand sections |
+| **y** | Copy response to clipboard |
 
 ### Response Scrolling
 
@@ -195,6 +220,8 @@ cargo run
 |-----|--------|
 | **PageDown** | Scroll down 10 lines |
 | **PageUp** | Scroll up 10 lines |
+| **Shift+PageDown** | Scroll headers down 5 lines |
+| **Shift+PageUp** | Scroll headers up 5 lines |
 | **Home** | Jump to top of response |
 | **End** | Jump to bottom of response |
 
@@ -268,15 +295,62 @@ When on the Headers field, press **'h'** to enter header edit mode:
 
 ### Using Template Variables
 
-Endpoints support template variables using `{{variable}}` syntax:
+Endpoints support two types of template variables:
+
+#### User Variables: `{{VARIABLE_NAME}}`
+Define and manage your own variables:
+
+1. Press **'v'** to open variable manager
+2. Press **'n'** to create a new variable
+3. Enter key (e.g., "API_URL") and value (e.g., "https://api.example.com")
+4. Press **Enter** to save
 
 **Example**:
 ```
-URL: https://api.example.com/users/{{userId}}
-Body: {"name": "{{userName}}", "email": "{{userEmail}}"}
+URL: {{API_URL}}/users/{{USER_ID}}
+Body: {"name": "{{USER_NAME}}", "email": "{{USER_EMAIL}}"}
 ```
 
-**Note**: Variable substitution is currently done with empty values. Full variable management is planned for a future release.
+Variables are stored in `~/.rest-api-tui/variables.json` and persist across sessions.
+
+#### Faker Variables: `{{f:variablename}}`
+Generate dynamic test data using the faker library:
+
+**Example**:
+```json
+{
+  "name": "{{f:fullname}}",
+  "email": "{{f:email}}",
+  "phone": "{{f:phone}}",
+  "company": "{{f:company}}",
+  "id": "{{f:uuid}}"
+}
+```
+
+**Popular Faker Variables**:
+- Names: `{{f:firstname}}`, `{{f:lastname}}`, `{{f:fullname}}`
+- Internet: `{{f:email}}`, `{{f:username}}`, `{{f:url}}`, `{{f:ipv4}}`
+- Phone: `{{f:phone}}`, `{{f:cellnumber}}`
+- Address: `{{f:street}}`, `{{f:city}}`, `{{f:state}}`, `{{f:zipcode}}`
+- Company: `{{f:company}}`, `{{f:industry}}`
+- IDs: `{{f:uuid}}`, `{{f:number}}`
+- Dates: `{{f:date}}`, `{{f:datetime}}`, `{{f:time}}`
+- Text: `{{f:word}}`, `{{f:sentence}}`, `{{f:paragraph}}`
+
+See [FAKER_FEATURE.md](FAKER_FEATURE.md) for the complete list of 50+ faker variables.
+
+#### Combining Variables
+You can mix user variables and faker variables in the same request:
+
+```json
+{
+  "api_key": "{{API_KEY}}",
+  "user": {
+    "name": "{{f:fullname}}",
+    "email": "{{f:email}}"
+  }
+}
+```
 
 ### Load Testing an Endpoint
 
@@ -303,9 +377,10 @@ Body: {"name": "{{userName}}", "email": "{{userEmail}}"}
 
 ### Storage Location
 
-Collections are stored as JSON files in:
+Collections and variables are stored as JSON files in:
 ```
-~/.rest-api-tui/collections/
+~/.rest-api-tui/collections/    # API collections
+~/.rest-api-tui/variables.json  # User-defined variables
 ```
 
 Each collection is a separate JSON file with all its endpoints.
@@ -373,30 +448,48 @@ Authentication is currently configured via JSON file editing:
 - Use **Ctrl+j/k** to navigate without leaving home row
 - Press **Enter** twice to select and view an endpoint
 
-### 2. Efficient Scrolling
+### 2. Variable Management
+
+- Press **'v'** from main screen to manage variables
+- Define common values once (API keys, base URLs, user IDs)
+- Use faker variables for test data that changes each request
+- Combine user variables and faker variables in the same request
+
+### 3. Quick Testing Workflow
+
+- Use **'x'** for rapid testing (no prompts, instant execution)
+- Use **'e'** when you need to review or change variable values
+- Faker variables generate fresh data on every execution
+- Copy responses with **'y'** for quick sharing
+
+### 4. Efficient Scrolling
 
 - Press **End** to jump to bottom of large responses
 - Press **Home** to jump back to top
 - Use **PageDown/PageUp** for controlled scrolling
+- Use **Shift+PageDown/PageUp** to scroll through headers
+- Press **Space** to collapse/expand sections
 
-### 3. Network Traffic Analysis
+### 5. Network Traffic Analysis
 
 - Enable traffic view ('t') to debug slow requests
 - Check **Waiting (TTFB)** for server performance
 - Check **Content Download** for network speed
 - Monitor **Total Transfer** for bandwidth usage
 
-### 4. Header Management
+### 6. Header Management
 
 - Use custom headers for authentication (Authorization: Bearer token)
 - Add Content-Type headers for JSON/XML requests
 - Add custom headers for API keys
+- Press **'H'** to toggle response headers display
 
-### 5. Keyboard Efficiency
+### 7. Keyboard Efficiency
 
 - Learn Ctrl+h/j/k/l for navigation (no arrow keys needed)
 - Use 'n', 'e', 'd' for quick CRUD operations
 - Press '?' to see all shortcuts
+- Use 'x' for fastest request execution
 
 ## Troubleshooting
 
@@ -448,10 +541,19 @@ Variables are substituted at request time.
 
 ## Roadmap
 
+### Recently Completed ✅
+
+- [x] **Variable Management**: User-defined variables with persistent storage
+- [x] **Faker Integration**: 50+ dynamic data generators for testing
+- [x] **Quick Execute**: Instant request execution with 'x' key
+- [x] **Clipboard Support**: Copy responses with 'y' key
+- [x] **Collapsible Sections**: Toggle sections with Space key
+- [x] **Scrollable Headers**: Navigate through long header lists
+
 ### Planned Features
 
 - [ ] **Import/Export**: cURL, Postman, HTTPie
-- [ ] **Environment Variables**: Manage variables per environment
+- [ ] **Environment Variables**: Manage variables per environment (dev, staging, prod)
 - [ ] **Request History**: Track and replay previous requests
 - [ ] **Authentication UI**: Configure auth from TUI
 - [ ] **Search**: Find endpoints across collections

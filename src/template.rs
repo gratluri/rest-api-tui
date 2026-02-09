@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use thiserror::Error;
+use crate::faker;
 
 #[derive(Debug, Error)]
 pub enum TemplateError {
@@ -8,6 +9,9 @@ pub enum TemplateError {
     
     #[error("Invalid template syntax: {0}")]
     InvalidSyntax(String),
+    
+    #[error("Unknown faker variable: {0}")]
+    UnknownFakerVariable(String),
 }
 
 pub type Result<T> = std::result::Result<T, TemplateError>;
@@ -52,6 +56,7 @@ pub fn find_variables(template: &str) -> Vec<String> {
 }
 
 /// Substitute template variables with values from the provided map
+/// Supports both user variables {{variable}} and faker variables {{f:firstname}}
 /// Returns an error if any variable is missing
 pub fn substitute(template: &str, variables: &HashMap<String, String>) -> Result<String> {
     let mut result = String::new();
@@ -82,10 +87,22 @@ pub fn substitute(template: &str, variables: &HashMap<String, String>) -> Result
                     
                     if found_closing {
                         let var_name = var_name.trim();
-                        if let Some(value) = variables.get(var_name) {
-                            result.push_str(value);
+                        
+                        // Check if it's a faker variable (f:variablename)
+                        if faker::is_faker_variable(var_name) {
+                            let faker_name = faker::extract_faker_name(var_name);
+                            if let Some(fake_value) = faker::generate_fake_value(faker_name) {
+                                result.push_str(&fake_value);
+                            } else {
+                                return Err(TemplateError::UnknownFakerVariable(faker_name.to_string()));
+                            }
                         } else {
-                            return Err(TemplateError::MissingVariable(var_name.to_string()));
+                            // Regular user variable
+                            if let Some(value) = variables.get(var_name) {
+                                result.push_str(value);
+                            } else {
+                                return Err(TemplateError::MissingVariable(var_name.to_string()));
+                            }
                         }
                     } else {
                         // Unclosed template variable
@@ -108,6 +125,7 @@ pub fn substitute(template: &str, variables: &HashMap<String, String>) -> Result
 }
 
 /// Substitute template variables, using empty string for missing variables
+/// Supports both user variables {{variable}} and faker variables {{f:firstname}}
 pub fn substitute_lenient(template: &str, variables: &HashMap<String, String>) -> String {
     let mut result = String::new();
     let mut chars = template.chars().peekable();
@@ -137,10 +155,21 @@ pub fn substitute_lenient(template: &str, variables: &HashMap<String, String>) -
                     
                     if found_closing {
                         let var_name = var_name.trim();
-                        if let Some(value) = variables.get(var_name) {
-                            result.push_str(value);
+                        
+                        // Check if it's a faker variable (f:variablename)
+                        if faker::is_faker_variable(var_name) {
+                            let faker_name = faker::extract_faker_name(var_name);
+                            if let Some(fake_value) = faker::generate_fake_value(faker_name) {
+                                result.push_str(&fake_value);
+                            }
+                            // If faker variable not found, just skip it (empty string)
+                        } else {
+                            // Regular user variable
+                            if let Some(value) = variables.get(var_name) {
+                                result.push_str(value);
+                            }
+                            // If variable not found, just skip it (empty string)
                         }
-                        // If variable not found, just skip it (empty string)
                     } else {
                         // Unclosed template, keep original
                         result.push_str("{{");
